@@ -1,0 +1,14 @@
+{
+  "name": "echo-thief",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "deploy": "vite build && gh-pages -d dist"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "gh-pages": "^6.2.0"
+  }
+}
