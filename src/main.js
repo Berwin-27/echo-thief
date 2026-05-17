@@ -5,10 +5,12 @@ let exitX, exitY;
 let currentLevel     = 1;
 let transitioning    = false;
 let audioCtx;
-let lastPulse        = 0;
-let ambientNodes     = [];
-let ambientTimer     = null;
+let lastPulse         = 0;
+let lastHeartbeat     = 0;
+let ambientNodes      = [];
+let ambientTimer      = null;
 let currentGlowRadius = 0;
+let tensionOverlay;
 let mapW, mapH;
 
 const TILE = 64;
@@ -148,6 +150,22 @@ function playVictory() {
     });
 }
 
+function playHeartbeat() {
+    const ctx = getAudio();
+    [0, 0.18].forEach(t => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(65, ctx.currentTime + t);
+        osc.frequency.exponentialRampToValueAtTime(18, ctx.currentTime + t + 0.15);
+        gain.gain.setValueAtTime(0.45, ctx.currentTime + t);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.2);
+        osc.start(ctx.currentTime + t);
+        osc.stop(ctx.currentTime + t + 0.22);
+    });
+}
+
 function stopAmbientMusic() {
     clearTimeout(ambientTimer);
     ambientTimer = null;
@@ -159,21 +177,26 @@ function startAmbientMusic() {
     stopAmbientMusic();
     const ctx = getAudio();
 
-    // Feedback delay reverb — two taps, low-passed in feedback loop
+    // Master lowpass cuts any high-end harshness before it hits speakers
+    const masterLP = ctx.createBiquadFilter();
+    masterLP.type = 'lowpass'; masterLP.frequency.value = 700;
+    masterLP.connect(ctx.destination);
+
+    // Feedback delay reverb — tighter feedback and lower cutoff to stay smooth
     const d1 = ctx.createDelay(2); d1.delayTime.value = 0.31;
     const d2 = ctx.createDelay(2); d2.delayTime.value = 0.57;
-    const fb  = ctx.createGain(); fb.gain.value = 0.36;
-    const lp  = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
-    const wet = ctx.createGain(); wet.gain.value = 0.28;
+    const fb  = ctx.createGain(); fb.gain.value = 0.26;
+    const lp  = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+    const wet = ctx.createGain(); wet.gain.value = 0.20;
     d1.connect(d2); d2.connect(fb); fb.connect(lp); lp.connect(d1);
-    d1.connect(wet); d2.connect(wet); wet.connect(ctx.destination);
+    d1.connect(wet); d2.connect(wet); wet.connect(masterLP);
 
-    // Drone layers — two detuned oscillators create natural beating at ~0.6 Hz
+    // Drone layers — triangle is warm without the sawtooth buzz; LFO depths kept subtle
     [
-        [55,   'sawtooth', 0.055, 0.04, 0.8],
-        [55.6, 'sine',     0.045, 0.07, 0.6],
-        [82.4, 'sine',     0.030, 0.11, 1.0],  // minor third-ish above base
-        [110,  'sine',     0.018, 0.15, 0.4],  // octave, very subtle
+        [55,   'triangle', 0.055, 0.04, 0.25],
+        [55.6, 'sine',     0.042, 0.06, 0.18],
+        [82.4, 'sine',     0.026, 0.09, 0.40],
+        [110,  'sine',     0.015, 0.13, 0.15],
     ].forEach(([f, type, vol, lfoHz, lfoDep]) => {
         const osc  = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -185,13 +208,13 @@ function startAmbientMusic() {
         gain.gain.setValueAtTime(0, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(vol, ctx.currentTime + 4);
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(masterLP);
         gain.connect(d1);
         osc.start(); lfo.start();
         ambientNodes.push(osc, lfo);
     });
 
-    // Whisper tones — slow sine swells from a Phrygian/diminished palette
+    // Whisper tones — Phrygian palette, quieter so they don't spike
     const palette = [110, 116.5, 138.6, 155.6, 174.6, 196, 207.7, 233, 261.6, 277.2, 311.1];
     function whisper() {
         const freq = palette[Math.floor(Math.random() * palette.length)] * (Math.random() < 0.4 ? 2 : 1);
@@ -200,9 +223,9 @@ function startAmbientMusic() {
         const g    = ctx.createGain();
         osc.type = 'sine'; osc.frequency.value = freq;
         g.gain.setValueAtTime(0, ctx.currentTime);
-        g.gain.linearRampToValueAtTime(0.03, ctx.currentTime + dur * 0.3);
+        g.gain.linearRampToValueAtTime(0.018, ctx.currentTime + dur * 0.3);
         g.gain.linearRampToValueAtTime(0, ctx.currentTime + dur);
-        osc.connect(g); g.connect(d1); g.connect(ctx.destination);
+        osc.connect(g); g.connect(d1);
         osc.start(); osc.stop(ctx.currentTime + dur);
         ambientTimer = setTimeout(whisper, 3500 + Math.random() * 5000);
     }
@@ -397,6 +420,9 @@ class GameScene extends Phaser.Scene {
         revealGfx = this.add.graphics();
         revealGfx.setDepth(11);
 
+        // Screen-space red vignette for tension — drawn over everything
+        tensionOverlay = this.add.graphics().setDepth(15).setScrollFactor(0);
+
         // Camera follows player, bounded to the world
         this.cameras.main.startFollow(player, true);
         this.cameras.main.setBounds(0, 0, mapW, mapH);
@@ -435,17 +461,18 @@ class GameScene extends Phaser.Scene {
             const heard = isMoving && dp <= soundRadius;
 
             if (g.state === 'PATROL') {
-                // Reverse off walls so guards never stare into them
-                if (g.body.blocked.left)  g.setVelocityX(90);
-                if (g.body.blocked.right) g.setVelocityX(-90);
+                if (g.body.blocked.left)  { g.setVelocityX(90);  g.setVelocityY(0); }
+                if (g.body.blocked.right) { g.setVelocityX(-90); g.setVelocityY(0); }
+                if (g.body.blocked.up)    { g.setVelocityY(90);  g.setVelocityX(0); }
+                if (g.body.blocked.down)  { g.setVelocityY(-90); g.setVelocityX(0); }
                 if (heard) {
                     playAlertSiren();
                     g.state  = 'ALERT';
                     g.heardX = player.x;
                     g.heardY = player.y;
+                    g.wallSlip = null;
                 }
             } else if (g.state === 'ALERT') {
-                // Continuously update target while player is audible
                 if (heard) { g.heardX = player.x; g.heardY = player.y; }
                 const dt = Phaser.Math.Distance.Between(g.x, g.y, g.heardX, g.heardY);
                 if (dt < 12) {
@@ -453,7 +480,17 @@ class GameScene extends Phaser.Scene {
                     g.state     = 'WAIT';
                     g.waitUntil = now + 2000;
                 } else {
-                    this.physics.moveTo(g, g.heardX, g.heardY, 140);
+                    const ang = Phaser.Math.Angle.Between(g.x, g.y, g.heardX, g.heardY);
+                    const spd = 150;
+                    if (!g.body.blocked.none) {
+                        // Slide perpendicular to the wall to navigate around it
+                        if (!g.wallSlip) g.wallSlip = Math.random() < 0.5 ? 1 : -1;
+                        const slip = ang + g.wallSlip * Math.PI / 2;
+                        g.setVelocity(Math.cos(slip) * spd, Math.sin(slip) * spd);
+                    } else {
+                        g.wallSlip = null;
+                        g.setVelocity(Math.cos(ang) * spd, Math.sin(ang) * spd);
+                    }
                 }
             } else if (g.state === 'WAIT') {
                 if (heard) {
@@ -501,6 +538,19 @@ class GameScene extends Phaser.Scene {
         if (isMoving) {
             const cd = player.moveState === 'RUN' ? 190 : player.moveState === 'CROUCH' ? 480 : 330;
             if (Date.now() - lastPulse > cd) { lastPulse = Date.now(); playFootstep(player.moveState); }
+        }
+
+        // Tension: pulsing red vignette + heartbeat when any guard is alerted
+        tensionOverlay.clear();
+        const anyAlert = guards.getChildren().some(g => g.state === 'ALERT');
+        if (anyAlert) {
+            const pulse = 0.08 + 0.06 * Math.sin(now * 0.006);
+            tensionOverlay.fillStyle(0xcc0000, pulse);
+            tensionOverlay.fillRect(0, 0, 800, 600);
+            if (Date.now() - lastHeartbeat > 850) {
+                lastHeartbeat = Date.now();
+                playHeartbeat();
+            }
         }
     }
 }
