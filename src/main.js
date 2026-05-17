@@ -41,6 +41,13 @@ let playerDeadAt  = 0;
 let musicReactiveGain = null;
 let alertDroneGain    = null;
 let lastGuardSound    = 0;
+let totalGuards    = 0;
+let guardCountLabel;
+let minimapGfx;
+let fogGrid  = null;
+let levelGrid = null;
+let miniCols = 0, miniRows = 0;
+let highScore = parseInt(localStorage.getItem('echoThiefHigh') || '0');
 
 const TILE = 64;
 
@@ -82,7 +89,8 @@ function generateLevel(lvl) {
     grid[er][ec] = 3;
 
     // Guards: placed only in open horizontal corridors
-    const numGuards = 3 + Math.floor(lvl / 2);
+    const isBossFloor = lvl % 5 === 0;
+    const numGuards   = isBossFloor ? 1 + Math.floor(lvl / 4) : 3 + Math.floor(lvl / 2);
     let placed = 0; t = 0;
     while (placed < numGuards && t < 600) {
         t++;
@@ -91,6 +99,17 @@ function generateLevel(lvl) {
         if (grid[r][c] === 0 && grid[r][c - 1] === 0 && grid[r][c + 1] === 0) {
             grid[r][c] = 4;
             placed++;
+        }
+    }
+
+    // Boss guard — placed in far half on boss floors (multiples of 5)
+    if (isBossFloor) {
+        let bt = 0;
+        while (bt < 600) {
+            bt++;
+            const br = 2 + Math.floor(Math.random() * (rows - 4));
+            const bc = Math.floor(cols / 2) + Math.floor(Math.random() * (Math.floor(cols / 2) - 2));
+            if (grid[br][bc] === 0) { grid[br][bc] = 8; break; }
         }
     }
 
@@ -417,6 +436,45 @@ function getLevelTheme(lvl) {
     return              { wall: 0xff5522, glow: 0xcc2200, exit: 0xff8800, tension: 0xff3300 };
 }
 
+function drawBossSprite(gfx, x, y) {
+    // Gold crown
+    gfx.fillStyle(0xffcc00, 1);
+    gfx.fillRect(x - 7, y - 20, 14, 3);
+    gfx.fillRect(x - 7, y - 24, 3, 4);
+    gfx.fillRect(x - 1, y - 26, 4, 6);
+    gfx.fillRect(x + 4, y - 24, 3, 4);
+    // Dark cap
+    gfx.fillStyle(0x1a0000, 1);
+    gfx.fillRect(x - 7, y - 17, 14, 5);
+    gfx.fillRect(x - 9, y - 13, 18, 2);
+    // Face
+    gfx.fillStyle(0xcc9966, 1);
+    gfx.fillRect(x - 5, y - 11, 10, 7);
+    // Glowing red eyes
+    gfx.fillStyle(0xff2200, 1);
+    gfx.fillRect(x - 4, y - 10, 3, 2);
+    gfx.fillRect(x + 1, y - 10, 3, 2);
+    // Scowl
+    gfx.fillStyle(0x663322, 1);
+    gfx.fillRect(x - 3, y - 5, 7, 2);
+    // Armored body
+    gfx.fillStyle(0x3a0000, 1);
+    gfx.fillRect(x - 7, y - 3, 14, 9);
+    gfx.fillRect(x - 10, y - 2, 3, 6);
+    gfx.fillRect(x + 7,  y - 2, 3, 6);
+    // Gold plate
+    gfx.fillStyle(0xffcc00, 1);
+    gfx.fillRect(x - 3, y,  7, 5);
+    // Legs
+    gfx.fillStyle(0x2a0000, 1);
+    gfx.fillRect(x - 6, y + 6, 5, 7);
+    gfx.fillRect(x + 1, y + 6, 5, 7);
+    // Heavy boots
+    gfx.fillStyle(0x111111, 1);
+    gfx.fillRect(x - 7, y + 13, 6, 3);
+    gfx.fillRect(x + 1, y + 13, 6, 3);
+}
+
 function drawKOGuard(gfx, x, y) {
     gfx.fillStyle(0x555555, 0.8);
     gfx.fillRect(x - 13, y - 4, 26, 9);
@@ -511,6 +569,7 @@ class GameScene extends Phaser.Scene {
         keycardCollected = false; playerGrenades = 0; activeGrenades = [];
         guardKOs = 0; anyAlerted = false; lastKOTime = 0; comboCount = 1;
         guardRipples = []; worldParticles = []; playerDead = false; playerDeadAt = 0;
+        totalGuards = 0;
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -529,6 +588,9 @@ class GameScene extends Phaser.Scene {
         const rows  = level.length;
         mapW = cols * TILE;
         mapH = rows * TILE;
+        levelGrid = level;
+        miniCols  = cols; miniRows = rows;
+        fogGrid   = Array.from({ length: rows }, () => new Array(cols).fill(false));
 
         this.physics.world.setBounds(0, 0, mapW, mapH);
 
@@ -560,11 +622,23 @@ class GameScene extends Phaser.Scene {
                     g.faceAngle = 0;
                     g.hitsLeft  = 1;
                     g.setAlpha(0);
+                    totalGuards++;
                     if (currentLevel >= 11 && !elitePlaced) {
                         g.elite    = true;
                         g.hitsLeft = 2;
                         elitePlaced = true;
                     }
+                } else if (cell === 8) {
+                    const g = guards.create(x, y, 'guard');
+                    g.setCollideWorldBounds(true);
+                    g.setVelocityX(Math.round(patrolSpd(currentLevel) * 1.45));
+                    g.state     = 'PATROL';
+                    g.koUntil   = 0;
+                    g.faceAngle = 0;
+                    g.hitsLeft  = 3;
+                    g.boss      = true;
+                    g.setAlpha(0);
+                    totalGuards++;
                 } else if (cell === 3) {
                     exit = this.add.rectangle(x, y, TILE, TILE, 0x00aa44, 0);
                     this.physics.add.existing(exit, true);
@@ -696,8 +770,12 @@ class GameScene extends Phaser.Scene {
                             fontSize: '38px', fontFamily: 'monospace',
                             color: '#ffffff', align: 'center',
                         }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                        if (score > highScore) { highScore = score; localStorage.setItem('echoThiefHigh', score); }
                         this.add.text(400, 375, `FINAL SCORE:  ${score}`, {
                             fontSize: '20px', fontFamily: 'monospace', color: '#ffcc00',
+                        }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                        if (highScore >= score) this.add.text(400, 407, `BEST:  ${highScore}`, {
+                            fontSize: '13px', fontFamily: 'monospace', color: '#666666',
                         }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
                         this.add.text(400, 430, 'PRESS ANY KEY TO PLAY AGAIN', {
                             fontSize: '15px', fontFamily: 'monospace', color: '#888888',
@@ -743,6 +821,9 @@ class GameScene extends Phaser.Scene {
             .setOrigin(0.5).setDepth(16).setScrollFactor(0).setVisible(false);
         grenadeCountLabel = this.add.text(14, 20, '', { fontSize: '9px', fontFamily: 'monospace', color: '#888888' })
             .setDepth(16).setScrollFactor(0);
+        guardCountLabel = this.add.text(14, 592, '', { fontSize: '9px', fontFamily: 'monospace', color: '#555555' })
+            .setDepth(16).setScrollFactor(0);
+        minimapGfx = this.add.graphics().setDepth(17).setScrollFactor(0);
 
         // Camera follows player, bounded to the world
         this.cameras.main.startFollow(player, true);
@@ -755,6 +836,26 @@ class GameScene extends Phaser.Scene {
         this.add.text(400, 592, 'WASD  to  move  ·  reach  the  exit', {
             fontSize: '11px', fontFamily: 'monospace', color: '#333333',
         }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
+
+        // Tier transition card on floors 6, 11, 16
+        const tierNames = { 6: 'SECURITY WING', 11: 'THE LAB', 16: 'THE CORE' };
+        if (tierNames[currentLevel]) {
+            this.physics.world.pause();
+            const tcBg = this.add.graphics().setDepth(25).setScrollFactor(0);
+            tcBg.fillStyle(0x000000, 1);
+            tcBg.fillRect(0, 0, 800, 600);
+            const tcTitle = this.add.text(400, 252, tierNames[currentLevel], {
+                fontSize: '46px', fontFamily: 'monospace', color: '#ffffff',
+            }).setOrigin(0.5).setDepth(25).setScrollFactor(0);
+            const tcSub = this.add.text(400, 320, `FLOORS  ${currentLevel} — ${currentLevel + 4}`, {
+                fontSize: '15px', fontFamily: 'monospace', color: '#444444',
+            }).setOrigin(0.5).setDepth(25).setScrollFactor(0);
+            this.time.delayedCall(2200, () => {
+                this.tweens.add({ targets: [tcBg, tcTitle, tcSub], alpha: 0, duration: 500,
+                    onComplete: () => { tcBg.destroy(); tcTitle.destroy(); tcSub.destroy(); this.physics.world.resume(); }
+                });
+            });
+        }
     }
 
     update() {
@@ -797,7 +898,7 @@ class GameScene extends Phaser.Scene {
                     const timeSince = now - lastKOTime;
                     comboCount = timeSince < 3000 ? comboCount + 1 : 1;
                     lastKOTime = now;
-                    const baseScore = g.elite ? 400 : 200;
+                    const baseScore = g.boss ? 600 : g.elite ? 400 : 200;
                     const mult      = 1 + (comboCount - 1) * 0.5;
                     score += Math.round(baseScore * mult);
                     guardKOs++;
@@ -837,8 +938,8 @@ class GameScene extends Phaser.Scene {
             const heard = isMoving && dp <= curSound;
 
             // FOV sight cone
-            const fovRange = g.elite ? 220 : 150;
-            const fovHalf  = g.elite ? Math.PI / 3 : Math.PI / 4;
+            const fovRange = g.boss ? 300 : g.elite ? 220 : 150;
+            const fovHalf  = g.boss ? Math.PI * 5 / 12 : g.elite ? Math.PI / 3 : Math.PI / 4;
             const toPlAng  = Math.atan2(player.y - g.y, player.x - g.x);
             const angDiff  = Math.abs(Phaser.Math.Angle.Wrap(toPlAng - (g.faceAngle || 0)));
             const seen     = !transitioning && dp < fovRange && angDiff < fovHalf;
@@ -867,7 +968,8 @@ class GameScene extends Phaser.Scene {
                             }
                         });
                     }
-                    if (currentLevel >= 11 && !alarmFired && !alarmTime) alarmTime = now + 14000;
+                    if (g.boss && !alarmFired && !alarmTime) alarmTime = now + 200;
+                    else if (currentLevel >= 11 && !alarmFired && !alarmTime) alarmTime = now + 14000;
                 }
             } else if (g.state === 'ALERT') {
                 if (heard || seen) { g.heardX = player.x; g.heardY = player.y; }
@@ -1013,15 +1115,24 @@ class GameScene extends Phaser.Scene {
                     } else {
                         // FOV cone (arc sector)
                         const fa   = g.faceAngle || 0;
-                        const fovR = g.elite ? 220 : 150;
-                        const fovA = g.elite ? Math.PI / 3 : Math.PI / 4;
-                        revealGfx.fillStyle(g.elite ? 0xffaa00 : 0xff3333, g.state === 'ALERT' ? 0.22 : 0.10);
+                        const fovR = g.boss ? 300 : g.elite ? 220 : 150;
+                        const fovA = g.boss ? Math.PI * 5 / 12 : g.elite ? Math.PI / 3 : Math.PI / 4;
+                        const coneCol = g.boss ? 0xff6600 : g.elite ? 0xffaa00 : 0xff3333;
+                        revealGfx.fillStyle(coneCol, g.state === 'ALERT' ? 0.28 : 0.12);
                         revealGfx.slice(g.x, g.y, fovR, fa - fovA, fa + fovA, false);
                         revealGfx.fillPath();
-                        drawGuardSprite(revealGfx, g.x, g.y);
-                        if (g.elite) {
+                        if (g.boss) drawBossSprite(revealGfx, g.x, g.y);
+                        else drawGuardSprite(revealGfx, g.x, g.y);
+                        if (g.elite && !g.boss) {
                             revealGfx.fillStyle(0xffcc00, 1);
                             revealGfx.fillRect(g.x - 3, g.y - 21, 6, 6);
+                        }
+                        if (g.boss && g.hitsLeft < 3) {
+                            // HP pips below boss
+                            for (let h = 0; h < g.hitsLeft; h++) {
+                                revealGfx.fillStyle(0xff6600, 1);
+                                revealGfx.fillRect(g.x - 8 + h * 8, g.y + 18, 6, 4);
+                            }
                         }
                         if (g.alertFlash && g.alertFlash > now) {
                             const a = (g.alertFlash - now) / 900;
@@ -1144,6 +1255,59 @@ class GameScene extends Phaser.Scene {
 
         weaponLabel.setText(`[ ${getWeapon(currentLevel).name} ]  SPACE`);
         scoreLabel.setText(`SCORE  ${score}`);
+        guardCountLabel.setText(`KO  ${guardKOs} / ${totalGuards}`);
+
+        // Fog of war update
+        if (fogGrid) {
+            const pc = Math.floor(player.x / TILE);
+            const pr = Math.floor(player.y / TILE);
+            const revR = Math.ceil(curLight / TILE) + 1;
+            for (let dr = -revR; dr <= revR; dr++) {
+                for (let dc = -revR; dc <= revR; dc++) {
+                    const row = pr + dr, col = pc + dc;
+                    if (row >= 0 && row < miniRows && col >= 0 && col < miniCols)
+                        fogGrid[row][col] = true;
+                }
+            }
+        }
+
+        // Minimap
+        minimapGfx.clear();
+        if (fogGrid && levelGrid) {
+            const TS   = 2;
+            const miniW = miniCols * TS;
+            const miniH = miniRows * TS;
+            const mx   = 800 - 8 - miniW;
+            const my   = 8;
+            minimapGfx.fillStyle(0x000000, 0.72);
+            minimapGfx.fillRect(mx - 2, my - 2, miniW + 4, miniH + 4);
+            for (let row = 0; row < miniRows; row++) {
+                for (let col = 0; col < miniCols; col++) {
+                    if (!fogGrid[row][col]) continue;
+                    minimapGfx.fillStyle(levelGrid[row][col] === 1 ? 0x444444 : 0x111111, 1);
+                    minimapGfx.fillRect(mx + col * TS, my + row * TS, TS, TS);
+                }
+            }
+            // Exit marker
+            const eCol = Math.floor(exitX / TILE), eRow = Math.floor(exitY / TILE);
+            if (fogGrid[eRow] && fogGrid[eRow][eCol]) {
+                minimapGfx.fillStyle(keycardCollected ? theme.exit : 0x555555, 1);
+                minimapGfx.fillRect(mx + eCol * TS - 1, my + eRow * TS - 1, TS + 2, TS + 2);
+            }
+            // Keycard marker
+            keycardGrp.getChildren().forEach(kc => {
+                if (!kc.active) return;
+                const kCol = Math.floor(kc.x / TILE), kRow = Math.floor(kc.y / TILE);
+                if (fogGrid[kRow] && fogGrid[kRow][kCol]) {
+                    minimapGfx.fillStyle(0xffcc00, 1);
+                    minimapGfx.fillRect(mx + kCol * TS, my + kRow * TS, TS, TS);
+                }
+            });
+            // Player dot
+            const pCol = Math.floor(player.x / TILE), pRow = Math.floor(player.y / TILE);
+            minimapGfx.fillStyle(0xffffff, 1);
+            minimapGfx.fillRect(mx + pCol * TS - 1, my + pRow * TS - 1, TS + 2, TS + 2);
+        }
         grenadeCountLabel.setText(
             (keycardCollected ? '[ KEY ✓ ]' : '[ KEY ? ]') +
             (playerGrenades > 0 ? `  E: ${playerGrenades} nade` : '')

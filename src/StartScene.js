@@ -79,6 +79,14 @@ export default class StartScene extends Phaser.Scene {
             fontSize: '12px', fontFamily: 'monospace', color: '#1a6633',
         }).setOrigin(0, 0.5);
 
+        // High score
+        const hs = parseInt(localStorage.getItem('echoThiefHigh') || '0');
+        if (hs > 0) {
+            this.add.text(cx, 494, `BEST  SCORE:  ${hs}`, {
+                fontSize: '11px', fontFamily: 'monospace', color: '#444444',
+            }).setOrigin(0.5);
+        }
+
         // Blinking prompt
         const prompt = this.add.text(cx, 546, 'PRESS  ANY  KEY  TO  START', {
             fontSize: '15px', fontFamily: 'monospace', color: '#777777',
