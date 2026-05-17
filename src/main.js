@@ -732,8 +732,10 @@ class GameScene extends Phaser.Scene {
         }
         drawPlayerSprite(revealGfx, player.x, player.y);
         if (isMoving) {
-            const pulse = 0.06 + 0.04 * Math.sin(now * 0.008);
-            revealGfx.lineStyle(1, 0xff8800, pulse);
+            const pulse = 0.20 + 0.10 * Math.sin(now * 0.008);
+            revealGfx.fillStyle(0xff8800, pulse * 0.08);
+            revealGfx.fillCircle(player.x, player.y, curSound);
+            revealGfx.lineStyle(2, 0xff8800, pulse);
             revealGfx.strokeCircle(player.x, player.y, curSound);
         }
 
@@ -754,6 +756,17 @@ class GameScene extends Phaser.Scene {
         hpBarGfx.fillRect(28, 3, 100, 10);
         hpBarGfx.fillStyle(playerHP > 60 ? 0x22cc55 : playerHP > 30 ? 0xffaa00 : 0xff2222, 1);
         hpBarGfx.fillRect(28, 3, playerHP, 10);
+
+        // Time bonus decay bar — thin gold strip across the top
+        const elapsed = (Date.now() - levelStartTime) / 1000;
+        const bonusFrac = Math.max(0, 1 - elapsed / 60);
+        hpBarGfx.fillStyle(0x332200, 1);
+        hpBarGfx.fillRect(0, 0, 800, 3);
+        if (bonusFrac > 0) {
+            const bonusColor = bonusFrac > 0.5 ? 0xffcc00 : bonusFrac > 0.25 ? 0xff8800 : 0xff3300;
+            hpBarGfx.fillStyle(bonusColor, 0.85);
+            hpBarGfx.fillRect(0, 0, Math.round(800 * bonusFrac), 3);
+        }
 
         weaponLabel.setText(`[ ${getWeapon(currentLevel).name} ]  SPACE`);
         scoreLabel.setText(`SCORE  ${score}`);
