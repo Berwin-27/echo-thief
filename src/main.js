@@ -645,7 +645,7 @@ class GameScene extends Phaser.Scene {
                 align: 'center', lineSpacing: 6,
             }).setOrigin(0.5, 0).setDepth(19).setScrollFactor(0);
 
-            this.time.delayedCall(2000, () => {
+            this.time.delayedCall(5000, () => {
                 playVictory();
                 this.cameras.main.flash(500);
                 if (currentLevel < 20) {
@@ -972,16 +972,13 @@ class GameScene extends Phaser.Scene {
                             revealGfx.strokeCircle(g.x, g.y, 14 + p * 22);
                         }
                     } else {
-                        // FOV cone
+                        // FOV cone (arc sector)
                         const fa   = g.faceAngle || 0;
                         const fovR = g.elite ? 220 : 150;
                         const fovA = g.elite ? Math.PI / 3 : Math.PI / 4;
                         revealGfx.fillStyle(g.elite ? 0xffaa00 : 0xff3333, g.state === 'ALERT' ? 0.22 : 0.10);
-                        revealGfx.fillTriangle(
-                            g.x, g.y,
-                            g.x + fovR * Math.cos(fa - fovA), g.y + fovR * Math.sin(fa - fovA),
-                            g.x + fovR * Math.cos(fa + fovA), g.y + fovR * Math.sin(fa + fovA)
-                        );
+                        revealGfx.slice(g.x, g.y, fovR, fa - fovA, fa + fovA, false);
+                        revealGfx.fillPath();
                         drawGuardSprite(revealGfx, g.x, g.y);
                         if (g.elite) {
                             revealGfx.fillStyle(0xffcc00, 1);
