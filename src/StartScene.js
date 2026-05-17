@@ -60,10 +60,11 @@ export default class StartScene extends Phaser.Scene {
             'HOW  TO  PLAY',
             '',
             '  WASD    move  ·  noise alerts guards',
-            '  SPACE   attack the direction you\'re moving',
+            '  SHIFT   walk silently  ·  smaller sound radius',
+            '  SPACE   attack nearby guards',
             '',
             'Guards deal damage — knock them out first.',
-            'Reach the GREEN EXIT to escape each floor.',
+            'Reach the EXIT to escape each floor.',
             '',
             'New weapon every 5 floors  ·  20 floors total',
         ].join('\n'), {
@@ -73,7 +74,7 @@ export default class StartScene extends Phaser.Scene {
 
         // Exit key legend
         this.add.rectangle(cx - 38, 502, 14, 14, 0x00aa44).setOrigin(0.5);
-        this.add.text(cx - 28, 502, '= exit zone', {
+        this.add.text(cx - 28, 502, '= exit zone  ·  color shifts each tier', {
             fontSize: '12px', fontFamily: 'monospace', color: '#1a6633',
         }).setOrigin(0, 0.5);
 

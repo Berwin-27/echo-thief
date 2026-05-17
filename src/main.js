@@ -20,6 +20,10 @@ let lastMoveX = 1,  lastMoveY = 0;
 let alarmTime        = 0;
 let alarmFired       = false;
 let hpBarGfx, weaponLabel, alarmLabel, spaceKey;
+let shiftKey;
+let score = 0;
+let levelStartTime = 0;
+let scoreLabel;
 
 const TILE = 64;
 
@@ -79,6 +83,9 @@ function generateLevel(lvl) {
 const SPEED       = 250;
 const LIGHT_RADIUS = 180;
 const SOUND_RADIUS = 360;
+const WALK_SPEED  = 105;
+const WALK_LIGHT  = 105;
+const WALK_SOUND  = 155;
 
 function getAudio() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -313,6 +320,13 @@ function playDamageSound() {
     osc.start(); osc.stop(ctx.currentTime + 0.12);
 }
 
+function getLevelTheme(lvl) {
+    if (lvl <= 5)  return { wall: 0xffffff, glow: 0xffffff, exit: 0x00aa44, tension: 0xcc0000 };
+    if (lvl <= 10) return { wall: 0x44aaff, glow: 0x2266bb, exit: 0x00ccff, tension: 0x0055cc };
+    if (lvl <= 15) return { wall: 0x44ff88, glow: 0x22aa55, exit: 0xaaff44, tension: 0x009933 };
+    return              { wall: 0xff5522, glow: 0xcc2200, exit: 0xff8800, tension: 0xff3300 };
+}
+
 function drawKOGuard(gfx, x, y) {
     gfx.fillStyle(0x555555, 0.8);
     gfx.fillRect(x - 13, y - 4, 26, 9);
@@ -400,9 +414,10 @@ class GameScene extends Phaser.Scene {
     preload() {}
 
     create(data) {
-        if (data && data.newGame) { currentLevel = 1; startAmbientMusic(); }
+        if (data && data.newGame) { currentLevel = 1; score = 0; startAmbientMusic(); }
         transitioning = false;
         playerHP = 100; attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
+        levelStartTime = Date.now();
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -479,6 +494,14 @@ class GameScene extends Phaser.Scene {
         this.physics.add.overlap(player, exit, () => {
             if (transitioning) return;
             transitioning = true;
+            const elapsed = (Date.now() - levelStartTime) / 1000;
+            const timeBonus = Math.max(0, Math.round(3000 * (1 - elapsed / 60)));
+            const lvScore = 500 + timeBonus;
+            score += lvScore;
+            const bonusTxt = this.add.text(400, 280, `+${lvScore}`, {
+                fontSize: '22px', fontFamily: 'monospace', color: '#ffcc00',
+            }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+            this.tweens.add({ targets: bonusTxt, y: 220, alpha: 0, duration: 800, onComplete: () => bonusTxt.destroy() });
             playVictory();
             this.cameras.main.flash(500);
             if (currentLevel < 20) {
@@ -487,11 +510,14 @@ class GameScene extends Phaser.Scene {
             } else {
                 this.time.delayedCall(500, () => {
                     this.physics.world.pause();
-                    this.add.text(400, 300, 'YOU ESCAPED\nTHE DARKNESS!', {
+                    this.add.text(400, 240, 'YOU ESCAPED\nTHE DARKNESS!', {
                         fontSize: '38px', fontFamily: 'monospace',
                         color: '#ffffff', align: 'center',
                     }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
-                    this.add.text(400, 420, 'PRESS ANY KEY TO PLAY AGAIN', {
+                    this.add.text(400, 370, `FINAL SCORE:  ${score}`, {
+                        fontSize: '20px', fontFamily: 'monospace', color: '#ffcc00',
+                    }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                    this.add.text(400, 430, 'PRESS ANY KEY TO PLAY AGAIN', {
                         fontSize: '15px', fontFamily: 'monospace', color: '#888888',
                     }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
                     this.input.keyboard.once('keydown', () => {
@@ -509,6 +535,7 @@ class GameScene extends Phaser.Scene {
             right: Phaser.Input.Keyboard.KeyCodes.D,
         });
         spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+        shiftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
 
         currentGlowRadius = 0;
 
@@ -524,7 +551,9 @@ class GameScene extends Phaser.Scene {
         hpBarGfx       = this.add.graphics().setDepth(16).setScrollFactor(0);
         this.add.text(14, 7, 'HP', { fontSize: '9px', fontFamily: 'monospace', color: '#555555' })
             .setDepth(16).setScrollFactor(0);
-        weaponLabel = this.add.text(786, 8, '', { fontSize: '11px', fontFamily: 'monospace', color: '#555555' })
+        weaponLabel = this.add.text(786, 592, '', { fontSize: '11px', fontFamily: 'monospace', color: '#555555' })
+            .setOrigin(1, 0.5).setDepth(16).setScrollFactor(0);
+        scoreLabel = this.add.text(786, 8, 'SCORE  0', { fontSize: '11px', fontFamily: 'monospace', color: '#aaaaaa' })
             .setOrigin(1, 0.5).setDepth(16).setScrollFactor(0);
         alarmLabel = this.add.text(400, 26, '', { fontSize: '13px', fontFamily: 'monospace', color: '#ff4444' })
             .setOrigin(0.5).setDepth(16).setScrollFactor(0).setVisible(false);
@@ -544,18 +573,22 @@ class GameScene extends Phaser.Scene {
 
     update() {
         player.setVelocity(0);
+        const walking = shiftKey && shiftKey.isDown;
+        const curSpeed = walking ? WALK_SPEED : SPEED;
+        const curLight = walking ? WALK_LIGHT : LIGHT_RADIUS;
+        const curSound = walking ? WALK_SOUND : SOUND_RADIUS;
         let dirX = 0, dirY = 0;
-        if (wasd.left.isDown)  { player.setVelocityX(-SPEED); dirX -= 1; }
-        if (wasd.right.isDown) { player.setVelocityX( SPEED); dirX += 1; }
-        if (wasd.up.isDown)    { player.setVelocityY(-SPEED); dirY -= 1; }
-        if (wasd.down.isDown)  { player.setVelocityY( SPEED); dirY += 1; }
+        if (wasd.left.isDown)  { player.setVelocityX(-curSpeed); dirX -= 1; }
+        if (wasd.right.isDown) { player.setVelocityX( curSpeed); dirX += 1; }
+        if (wasd.up.isDown)    { player.setVelocityY(-curSpeed); dirY -= 1; }
+        if (wasd.down.isDown)  { player.setVelocityY( curSpeed); dirY += 1; }
         if (dirX !== 0 || dirY !== 0) {
             const len = Math.sqrt(dirX * dirX + dirY * dirY);
             lastMoveX = dirX / len; lastMoveY = dirY / len;
         }
 
         const isMoving   = dirX !== 0 || dirY !== 0;
-        const glowTarget = isMoving ? LIGHT_RADIUS : 0;
+        const glowTarget = isMoving ? curLight : 0;
         const now        = this.time.now;
         currentGlowRadius += (glowTarget - currentGlowRadius) * 0.14;
 
@@ -572,6 +605,7 @@ class GameScene extends Phaser.Scene {
                 g.koFlash = now + 280;
                 g.state   = 'KO';
                 g.setVelocity(0);
+                score += 200;
             });
         }
 
@@ -581,7 +615,7 @@ class GameScene extends Phaser.Scene {
             if (g.state === 'KO') { g.state = 'PATROL'; g.koUntil = 0; g.setVelocityX(patrolSpd(currentLevel)); }
 
             const dp    = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
-            const heard = isMoving && dp <= SOUND_RADIUS;
+            const heard = isMoving && dp <= curSound;
 
             if (g.state === 'PATROL') {
                 const ps = patrolSpd(currentLevel);
@@ -640,6 +674,8 @@ class GameScene extends Phaser.Scene {
             });
         }
 
+        const theme = getLevelTheme(currentLevel);
+
         darkOverlay.clear();
         darkOverlay.fillStyle(0x000000, 1);
         darkOverlay.fillRect(0, 0, mapW, mapH);
@@ -647,11 +683,9 @@ class GameScene extends Phaser.Scene {
         revealGfx.clear();
         if (currentGlowRadius > 2) {
             const r = Math.round(currentGlowRadius);
-            // Subtle floor glow so the light circle is perceptible
-            revealGfx.fillStyle(0xffffff, 0.04);
+            revealGfx.fillStyle(theme.glow, 0.04);
             revealGfx.fillCircle(player.x, player.y, r);
-            // Wall outlines within radius
-            revealGfx.lineStyle(1.5, 0xffffff, 0.85);
+            revealGfx.lineStyle(1.5, theme.wall, 0.85);
             walls.getChildren().forEach(w => {
                 if (Phaser.Math.Distance.Between(player.x, player.y, w.x, w.y) < r + TILE * 0.75)
                     revealGfx.strokeRect(w.x - TILE / 2, w.y - TILE / 2, TILE, TILE);
@@ -679,7 +713,7 @@ class GameScene extends Phaser.Scene {
                 }
             });
             if (Phaser.Math.Distance.Between(player.x, player.y, exitX, exitY) < r + TILE * 0.75) {
-                revealGfx.fillStyle(0x00aa44, 0.9);
+                revealGfx.fillStyle(theme.exit, 0.9);
                 revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
             }
             // Attack flash — thick glow + thin bright line that fades
@@ -697,6 +731,11 @@ class GameScene extends Phaser.Scene {
             }
         }
         drawPlayerSprite(revealGfx, player.x, player.y);
+        if (isMoving) {
+            const pulse = 0.06 + 0.04 * Math.sin(now * 0.008);
+            revealGfx.lineStyle(1, 0xff8800, pulse);
+            revealGfx.strokeCircle(player.x, player.y, curSound);
+        }
 
         if (isMoving && Date.now() - lastPulse > 190) { lastPulse = Date.now(); playFootstep('RUN'); }
 
@@ -704,7 +743,7 @@ class GameScene extends Phaser.Scene {
         const anyAlert = guards.getChildren().some(g => g.state === 'ALERT' && !(g.koUntil > now));
         if (anyAlert) {
             const pulse = 0.08 + 0.06 * Math.sin(now * 0.006);
-            tensionOverlay.fillStyle(0xcc0000, pulse);
+            tensionOverlay.fillStyle(theme.tension, pulse);
             tensionOverlay.fillRect(0, 0, 800, 600);
             if (Date.now() - lastHeartbeat > 850) { lastHeartbeat = Date.now(); playHeartbeat(); }
         }
@@ -717,6 +756,7 @@ class GameScene extends Phaser.Scene {
         hpBarGfx.fillRect(28, 3, playerHP, 10);
 
         weaponLabel.setText(`[ ${getWeapon(currentLevel).name} ]  SPACE`);
+        scoreLabel.setText(`SCORE  ${score}`);
         if (alarmTime) {
             alarmLabel.setText(`! ALARM IN ${Math.ceil((alarmTime - now) / 1000)}s`).setVisible(true);
         } else {
