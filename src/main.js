@@ -379,9 +379,9 @@ class GameScene extends Phaser.Scene {
     preload() {}
 
     create(data) {
-        if (data && data.newGame) { currentLevel = 1; playerHP = 100; startAmbientMusic(); }
+        if (data && data.newGame) { currentLevel = 1; startAmbientMusic(); }
         transitioning = false;
-        attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
+        playerHP = 100; attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -441,7 +441,7 @@ class GameScene extends Phaser.Scene {
             const t = Date.now();
             if (t - lastDamageTime < 1500) return;
             lastDamageTime = t;
-            playerHP = Math.max(0, playerHP - 25);
+            playerHP = Math.max(0, playerHP - 15);
             this.cameras.main.flash(120, 255, 50, 50);
             if (playerHP <= 0 && !transitioning) {
                 transitioning = true;
