@@ -540,15 +540,10 @@ class GameScene extends Phaser.Scene {
             playAttackSound(wp.name);
             guards.getChildren().forEach(g => {
                 if (g.koUntil > now) return;
-                const dist = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
-                if (dist > wp.range) return;
-                const dx = (g.x - player.x) / dist;
-                const dy = (g.y - player.y) / dist;
-                if (dx * lastMoveX + dy * lastMoveY > 0.2) {
-                    g.koUntil = now + koMs(currentLevel);
-                    g.state   = 'KO';
-                    g.setVelocity(0);
-                }
+                if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) > wp.range) return;
+                g.koUntil = now + koMs(currentLevel);
+                g.state   = 'KO';
+                g.setVelocity(0);
             });
         }
 
