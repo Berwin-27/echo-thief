@@ -77,7 +77,7 @@ function generateLevel(lvl) {
 }
 
 const SPEED       = 250;
-const LIGHT_RADIUS = 240;
+const LIGHT_RADIUS = 180;
 const SOUND_RADIUS = 360;
 
 function getAudio() {
@@ -246,8 +246,8 @@ function getWeapon(lvl) {
     if (lvl <= 15) return { name: 'TASER',  range: 130, cooldown: 1100 };
     return              { name: 'PISTOL', range: 270, cooldown: 900  };
 }
-function patrolSpd(lvl) { return lvl >= 11 ? 120 : 90; }
-function alertSpd(lvl)  { return lvl >= 11 ? 200 : 150; }
+function patrolSpd(lvl) { return lvl >= 11 ? 150 : 113; }
+function alertSpd(lvl)  { return lvl >= 11 ? 250 : 188; }
 function koMs(lvl)      { return lvl >= 16 ? 4000 : 8000; }
 
 function playAttackSound(name) {
@@ -290,6 +290,27 @@ function playAttackSound(name) {
         g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.09);
         osc.start(); osc.stop(ctx.currentTime + 0.09);
     }
+}
+
+function playDamageSound() {
+    const ctx = getAudio();
+    const len = Math.floor(ctx.sampleRate * 0.14);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d   = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.5);
+    const src  = ctx.createBufferSource(); src.buffer = buf;
+    const filt = ctx.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 280; filt.Q.value = 2;
+    const gain = ctx.createGain(); gain.gain.value = 0.7;
+    src.connect(filt); filt.connect(gain); gain.connect(ctx.destination); src.start();
+    // High sting on top
+    const osc = ctx.createOscillator(); const og = ctx.createGain();
+    osc.connect(og); og.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(110, ctx.currentTime + 0.1);
+    og.gain.setValueAtTime(0.18, ctx.currentTime);
+    og.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.start(); osc.stop(ctx.currentTime + 0.12);
 }
 
 function drawKOGuard(gfx, x, y) {
@@ -442,7 +463,13 @@ class GameScene extends Phaser.Scene {
             if (t - lastDamageTime < 1500) return;
             lastDamageTime = t;
             playerHP = Math.max(0, playerHP - 15);
-            this.cameras.main.flash(120, 255, 50, 50);
+            this.cameras.main.shake(200, 0.014);
+            this.cameras.main.flash(100, 255, 40, 40);
+            playDamageSound();
+            const dmgTxt = this.add.text(player.x, player.y - 10, '-15', {
+                fontSize: '15px', fontFamily: 'monospace', color: '#ff4444',
+            }).setDepth(20).setOrigin(0.5);
+            this.tweens.add({ targets: dmgTxt, y: player.y - 55, alpha: 0, duration: 750, onComplete: () => dmgTxt.destroy() });
             if (playerHP <= 0 && !transitioning) {
                 transitioning = true;
                 this.time.delayedCall(200, () => this.scene.restart({}));
@@ -542,6 +569,7 @@ class GameScene extends Phaser.Scene {
                 if (g.koUntil > now) return;
                 if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) > wp.range) return;
                 g.koUntil = now + koMs(currentLevel);
+                g.koFlash = now + 280;
                 g.state   = 'KO';
                 g.setVelocity(0);
             });
@@ -563,7 +591,7 @@ class GameScene extends Phaser.Scene {
                 if (g.body.blocked.down)  { g.setVelocityY(-ps); g.setVelocityX(0); }
                 if (heard) {
                     playAlertSiren();
-                    g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null;
+                    g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null; g.alertFlash = now + 900;
                     if (currentLevel >= 6) {
                         guards.getChildren().forEach(o => {
                             if (o === g || o.state !== 'PATROL' || o.koUntil > now) return;
@@ -603,6 +631,9 @@ class GameScene extends Phaser.Scene {
         // Alarm fires (lvl 11+): all non-KO guards instantly rush player
         if (alarmTime && now >= alarmTime) {
             alarmTime = 0; alarmFired = true;
+            this.cameras.main.shake(500, 0.022);
+            this.cameras.main.flash(400, 255, 0, 0);
+            playAlertSiren();
             guards.getChildren().forEach(g => {
                 if (g.koUntil > now) return;
                 g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null;
@@ -626,21 +657,43 @@ class GameScene extends Phaser.Scene {
                     revealGfx.strokeRect(w.x - TILE / 2, w.y - TILE / 2, TILE, TILE);
             });
             guards.getChildren().forEach(g => {
-                if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) < r + 14) {
-                    if (g.koUntil > now) drawKOGuard(revealGfx, g.x, g.y);
-                    else                 drawGuardSprite(revealGfx, g.x, g.y);
+                if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) < r + 20) {
+                    if (g.koUntil > now) {
+                        drawKOGuard(revealGfx, g.x, g.y);
+                        // Expanding ring on KO impact
+                        if (g.koFlash && g.koFlash > now) {
+                            const p = 1 - (g.koFlash - now) / 280;
+                            revealGfx.lineStyle(3, 0xffffff, (1 - p) * 0.9);
+                            revealGfx.strokeCircle(g.x, g.y, 14 + p * 22);
+                        }
+                    } else {
+                        drawGuardSprite(revealGfx, g.x, g.y);
+                        // "!" alert indicator
+                        if (g.alertFlash && g.alertFlash > now) {
+                            const a = (g.alertFlash - now) / 900;
+                            revealGfx.fillStyle(0xff3333, a);
+                            revealGfx.fillRect(g.x - 3, g.y - 24, 6, 11);
+                            revealGfx.fillRect(g.x - 3, g.y - 10, 6,  5);
+                        }
+                    }
                 }
             });
             if (Phaser.Math.Distance.Between(player.x, player.y, exitX, exitY) < r + TILE * 0.75) {
                 revealGfx.fillStyle(0x00aa44, 0.9);
                 revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
             }
-            // Attack flash
+            // Attack flash — thick glow + thin bright line that fades
             if (now < attackFlashUntil) {
+                const t  = (attackFlashUntil - now) / 140;
                 const wp = getWeapon(currentLevel);
-                revealGfx.lineStyle(3, 0xffffff, 0.9);
-                revealGfx.lineBetween(player.x, player.y,
-                    player.x + lastMoveX * wp.range, player.y + lastMoveY * wp.range);
+                const ex = player.x + lastMoveX * wp.range;
+                const ey = player.y + lastMoveY * wp.range;
+                revealGfx.lineStyle(10, 0xffffff, t * 0.18);
+                revealGfx.lineBetween(player.x, player.y, ex, ey);
+                revealGfx.lineStyle(2,  0xffffff, t * 0.95);
+                revealGfx.lineBetween(player.x, player.y, ex, ey);
+                revealGfx.fillStyle(0xffffff, t * 0.6);
+                revealGfx.fillCircle(ex, ey, 5);
             }
         }
         drawPlayerSprite(revealGfx, player.x, player.y);
