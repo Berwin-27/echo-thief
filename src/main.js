@@ -38,6 +38,9 @@ let guardRipples  = [];
 let worldParticles = [];
 let playerDead    = false;
 let playerDeadAt  = 0;
+let musicReactiveGain = null;
+let alertDroneGain    = null;
+let lastGuardSound    = 0;
 
 const TILE = 64;
 
@@ -228,27 +231,35 @@ function stopAmbientMusic() {
     ambientTimer = null;
     ambientNodes.forEach(n => { try { n.stop(); } catch(e) {} });
     ambientNodes = [];
+    musicReactiveGain = null;
+    alertDroneGain    = null;
 }
 
 function startAmbientMusic() {
     stopAmbientMusic();
     const ctx = getAudio();
 
-    // Master lowpass cuts any high-end harshness before it hits speakers
+    // Master lowpass → destination
     const masterLP = ctx.createBiquadFilter();
     masterLP.type = 'lowpass'; masterLP.frequency.value = 700;
     masterLP.connect(ctx.destination);
 
-    // Feedback delay reverb — tighter feedback and lower cutoff to stay smooth
+    // Reactive gain — smoothly adjusted during gameplay based on alert state
+    const reactGain = ctx.createGain();
+    reactGain.gain.value = 1.0;
+    reactGain.connect(masterLP);
+    musicReactiveGain = reactGain;
+
+    // Feedback delay reverb
     const d1 = ctx.createDelay(2); d1.delayTime.value = 0.31;
     const d2 = ctx.createDelay(2); d2.delayTime.value = 0.57;
     const fb  = ctx.createGain(); fb.gain.value = 0.26;
     const lp  = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
     const wet = ctx.createGain(); wet.gain.value = 0.20;
     d1.connect(d2); d2.connect(fb); fb.connect(lp); lp.connect(d1);
-    d1.connect(wet); d2.connect(wet); wet.connect(masterLP);
+    d1.connect(wet); d2.connect(wet); wet.connect(reactGain);
 
-    // Drone layers — triangle is warm without the sawtooth buzz; LFO depths kept subtle
+    // Drone layers — all route through reactGain for reactive volume
     [
         [55,   'triangle', 0.055, 0.04, 0.25],
         [55.6, 'sine',     0.042, 0.06, 0.18],
@@ -265,11 +276,25 @@ function startAmbientMusic() {
         gain.gain.setValueAtTime(0, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(vol, ctx.currentTime + 4);
         osc.connect(gain);
-        gain.connect(masterLP);
+        gain.connect(reactGain);
         gain.connect(d1);
         osc.start(); lfo.start();
         ambientNodes.push(osc, lfo);
     });
+
+    // Alert tension drone — trembling tone, silent until guards spot you
+    const aOsc  = ctx.createOscillator();
+    const aLFO  = ctx.createOscillator();
+    const aLFOG = ctx.createGain();
+    const aGain = ctx.createGain();
+    aOsc.type = 'sine'; aOsc.frequency.value = 185;
+    aLFO.type = 'sine'; aLFO.frequency.value = 5.5; aLFOG.gain.value = 7;
+    aLFO.connect(aLFOG); aLFOG.connect(aOsc.frequency);
+    aGain.gain.setValueAtTime(0, ctx.currentTime);
+    aOsc.connect(aGain); aGain.connect(reactGain);
+    aOsc.start(); aLFO.start();
+    alertDroneGain = aGain;
+    ambientNodes.push(aOsc, aLFO);
 
     // Whisper tones — Phrygian palette, quieter so they don't spike
     const palette = [110, 116.5, 138.6, 155.6, 174.6, 196, 207.7, 233, 261.6, 277.2, 311.1];
@@ -287,6 +312,20 @@ function startAmbientMusic() {
         ambientTimer = setTimeout(whisper, 3500 + Math.random() * 5000);
     }
     whisper();
+}
+
+function playGuardNearby(vol, pan) {
+    const ctx    = getAudio();
+    const len    = Math.floor(ctx.sampleRate * 0.06);
+    const buf    = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data   = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src    = ctx.createBufferSource(); src.buffer = buf;
+    const filt   = ctx.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 200;
+    const gain   = ctx.createGain(); gain.gain.value = vol;
+    const panner = ctx.createStereoPanner(); panner.pan.value = Math.max(-1, Math.min(1, pan));
+    src.connect(filt); filt.connect(gain); gain.connect(panner); panner.connect(ctx.destination);
+    src.start();
 }
 
 function getWeapon(lvl) {
@@ -1059,6 +1098,30 @@ class GameScene extends Phaser.Scene {
             tensionOverlay.fillStyle(theme.tension, pulse);
             tensionOverlay.fillRect(0, 0, 800, 600);
             if (Date.now() - lastHeartbeat > 850) { lastHeartbeat = Date.now(); playHeartbeat(); }
+        }
+
+        // Reactive ambient music
+        if (audioCtx && musicReactiveGain) {
+            const targetVol = anyAlert ? (alarmFired ? 1.55 : 1.2) : 1.0;
+            musicReactiveGain.gain.setTargetAtTime(targetVol, audioCtx.currentTime, 0.7);
+        }
+        if (audioCtx && alertDroneGain) {
+            const targetDrone = anyAlert ? (alarmFired ? 0.048 : 0.026) : 0;
+            alertDroneGain.gain.setTargetAtTime(targetDrone, audioCtx.currentTime, 0.55);
+        }
+
+        // Guard proximity audio — spatialized footstep shuffle
+        if (Date.now() - lastGuardSound > 540) {
+            lastGuardSound = Date.now();
+            guards.getChildren().forEach(g => {
+                if (g.koUntil > now) return;
+                const dp = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
+                if (dp < 320) {
+                    const vol = (1 - dp / 320) * 0.072;
+                    const pan = Math.sin(Math.atan2(g.y - player.y, g.x - player.x));
+                    playGuardNearby(vol, pan);
+                }
+            });
         }
 
         // HP bar (top-left, 100px = full health)
