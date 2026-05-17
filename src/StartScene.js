@@ -62,9 +62,10 @@ export default class StartScene extends Phaser.Scene {
             '  WASD    move  ·  noise alerts guards',
             '  SHIFT   walk silently  ·  smaller sound radius',
             '  SPACE   attack nearby guards',
+            '  E       throw noise grenade  ·  lures guards',
             '',
+            'Find the KEYCARD before the exit will open.',
             'Guards deal damage — knock them out first.',
-            'Reach the EXIT to escape each floor.',
             '',
             'New weapon every 5 floors  ·  20 floors total',
         ].join('\n'), {

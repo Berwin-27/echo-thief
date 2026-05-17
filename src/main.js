@@ -24,6 +24,12 @@ let shiftKey;
 let score = 0;
 let levelStartTime = 0;
 let scoreLabel;
+let keycardCollected = false;
+let keycardGrp, medkitGrp, grenadeGrp;
+let playerGrenades = 0;
+let grenadeKey;
+let grenadeCountLabel;
+let activeGrenades = [];
 
 const TILE = 64;
 
@@ -75,6 +81,34 @@ function generateLevel(lvl) {
             grid[r][c] = 4;
             placed++;
         }
+    }
+
+    // Keycard — one open tile in the far half
+    let kr, kc, kt = 0;
+    do {
+        kr = 1 + Math.floor(Math.random() * (rows - 2));
+        kc = Math.floor(cols / 2) + 1 + Math.floor(Math.random() * (Math.floor(cols / 2) - 2));
+        kt++;
+    } while (grid[kr][kc] !== 0 && kt < 300);
+    if (grid[kr][kc] === 0) grid[kr][kc] = 5;
+
+    // Medkits (1-2 per level)
+    const numMeds = 1 + (lvl % 3 === 0 ? 1 : 0);
+    let pm = 0, tm = 0;
+    while (pm < numMeds && tm < 300) {
+        tm++;
+        const mr = 1 + Math.floor(Math.random() * (rows - 2));
+        const mc = 2 + Math.floor(Math.random() * (cols - 4));
+        if (grid[mr][mc] === 0) { grid[mr][mc] = 6; pm++; }
+    }
+
+    // Noise grenades (1 per level)
+    let pg = 0, tg = 0;
+    while (pg < 1 && tg < 300) {
+        tg++;
+        const gr = 1 + Math.floor(Math.random() * (rows - 2));
+        const gc = 2 + Math.floor(Math.random() * (cols - 4));
+        if (grid[gr][gc] === 0) { grid[gr][gc] = 7; pg++; }
     }
 
     return grid;
@@ -418,6 +452,7 @@ class GameScene extends Phaser.Scene {
         transitioning = false;
         playerHP = 100; attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
         levelStartTime = Date.now();
+        keycardCollected = false; playerGrenades = 0; activeGrenades = [];
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -439,9 +474,13 @@ class GameScene extends Phaser.Scene {
 
         this.physics.world.setBounds(0, 0, mapW, mapH);
 
-        walls  = this.physics.add.staticGroup();
-        guards = this.physics.add.group();
+        walls      = this.physics.add.staticGroup();
+        guards     = this.physics.add.group();
+        keycardGrp = this.physics.add.staticGroup();
+        medkitGrp  = this.physics.add.staticGroup();
+        grenadeGrp = this.physics.add.staticGroup();
 
+        let elitePlaced = false;
         level.forEach((row, r) => {
             row.forEach((cell, c) => {
                 const x = c * TILE + TILE / 2;
@@ -458,13 +497,32 @@ class GameScene extends Phaser.Scene {
                     const g = guards.create(x, y, 'guard');
                     g.setCollideWorldBounds(true);
                     g.setVelocityX(patrolSpd(currentLevel));
-                    g.state   = 'PATROL';
-                    g.koUntil = 0;
+                    g.state     = 'PATROL';
+                    g.koUntil   = 0;
+                    g.faceAngle = 0;
+                    g.hitsLeft  = 1;
                     g.setAlpha(0);
+                    if (currentLevel >= 11 && !elitePlaced) {
+                        g.elite    = true;
+                        g.hitsLeft = 2;
+                        elitePlaced = true;
+                    }
                 } else if (cell === 3) {
                     exit = this.add.rectangle(x, y, TILE, TILE, 0x00aa44, 0);
                     this.physics.add.existing(exit, true);
                     exitX = x; exitY = y;
+                } else if (cell === 5) {
+                    const kc = this.add.rectangle(x, y, TILE, TILE, 0x000000, 0);
+                    this.physics.add.existing(kc, true);
+                    keycardGrp.add(kc);
+                } else if (cell === 6) {
+                    const mc = this.add.rectangle(x, y, TILE, TILE, 0x000000, 0);
+                    this.physics.add.existing(mc, true);
+                    medkitGrp.add(mc);
+                } else if (cell === 7) {
+                    const gc = this.add.rectangle(x, y, TILE, TILE, 0x000000, 0);
+                    this.physics.add.existing(gc, true);
+                    grenadeGrp.add(gc);
                 }
             });
         });
@@ -491,8 +549,43 @@ class GameScene extends Phaser.Scene {
             }
         });
 
+        this.physics.add.overlap(player, keycardGrp, (pl, kc) => {
+            if (keycardCollected || !kc.active) return;
+            keycardCollected = true;
+            kc.destroy();
+            this.cameras.main.flash(200, 255, 220, 0);
+            const txt = this.add.text(400, 300, 'KEYCARD  ACQUIRED', {
+                fontSize: '18px', fontFamily: 'monospace', color: '#ffcc00',
+            }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+            this.tweens.add({ targets: txt, alpha: 0, duration: 1500, onComplete: () => txt.destroy() });
+        });
+
+        this.physics.add.overlap(player, medkitGrp, (pl, mc) => {
+            if (!mc.active) return;
+            mc.destroy();
+            playerHP = Math.min(100, playerHP + 30);
+            playTone(660, 0.18, 'sine', 0.14);
+        });
+
+        this.physics.add.overlap(player, grenadeGrp, (pl, gc) => {
+            if (!gc.active) return;
+            gc.destroy();
+            playerGrenades++;
+        });
+
         this.physics.add.overlap(player, exit, () => {
             if (transitioning) return;
+            if (!keycardCollected) {
+                if (Date.now() - lastDamageTime > 2000) {
+                    lastDamageTime = Date.now();
+                    playTone(220, 0.3, 'square', 0.1);
+                    const lkTxt = this.add.text(400, 300, 'FIND  THE  KEYCARD', {
+                        fontSize: '18px', fontFamily: 'monospace', color: '#ffcc00',
+                    }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                    this.tweens.add({ targets: lkTxt, alpha: 0, duration: 1200, onComplete: () => lkTxt.destroy() });
+                }
+                return;
+            }
             transitioning = true;
             const elapsed = (Date.now() - levelStartTime) / 1000;
             const timeBonus = Math.max(0, Math.round(3000 * (1 - elapsed / 60)));
@@ -534,8 +627,9 @@ class GameScene extends Phaser.Scene {
             left:  Phaser.Input.Keyboard.KeyCodes.A,
             right: Phaser.Input.Keyboard.KeyCodes.D,
         });
-        spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-        shiftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+        spaceKey   = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+        shiftKey   = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+        grenadeKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
 
         currentGlowRadius = 0;
 
@@ -557,6 +651,8 @@ class GameScene extends Phaser.Scene {
             .setOrigin(1, 0.5).setDepth(16).setScrollFactor(0);
         alarmLabel = this.add.text(400, 26, '', { fontSize: '13px', fontFamily: 'monospace', color: '#ff4444' })
             .setOrigin(0.5).setDepth(16).setScrollFactor(0).setVisible(false);
+        grenadeCountLabel = this.add.text(14, 20, '', { fontSize: '9px', fontFamily: 'monospace', color: '#888888' })
+            .setDepth(16).setScrollFactor(0);
 
         // Camera follows player, bounded to the world
         this.cameras.main.startFollow(player, true);
@@ -601,21 +697,51 @@ class GameScene extends Phaser.Scene {
             guards.getChildren().forEach(g => {
                 if (g.koUntil > now) return;
                 if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) > wp.range) return;
-                g.koUntil = now + koMs(currentLevel);
-                g.koFlash = now + 280;
-                g.state   = 'KO';
-                g.setVelocity(0);
-                score += 200;
+                g.hitsLeft = (g.hitsLeft || 1) - 1;
+                g.koFlash  = now + 280;
+                if (g.hitsLeft <= 0) {
+                    g.koUntil = now + koMs(currentLevel);
+                    g.state   = 'KO';
+                    g.setVelocity(0);
+                    score += g.elite ? 400 : 200;
+                } else {
+                    g.koUntil = now + 500;
+                    g.state   = 'KO';
+                    g.setVelocity(0);
+                }
             });
         }
+
+        // Throw noise grenade (E key)
+        if (Phaser.Input.Keyboard.JustDown(grenadeKey) && playerGrenades > 0) {
+            playerGrenades--;
+            activeGrenades.push({ x: player.x + lastMoveX * 260, y: player.y + lastMoveY * 260, expiresAt: now + 3500 });
+            playTone(330, 0.15, 'square', 0.18);
+        }
+        activeGrenades = activeGrenades.filter(ag => ag.expiresAt > now);
 
         // Guard AI
         guards.getChildren().forEach(g => {
             if (g.koUntil > now) { g.setVelocity(0); return; }
             if (g.state === 'KO') { g.state = 'PATROL'; g.koUntil = 0; g.setVelocityX(patrolSpd(currentLevel)); }
 
+            if (g.body.velocity.x !== 0 || g.body.velocity.y !== 0)
+                g.faceAngle = Math.atan2(g.body.velocity.y, g.body.velocity.x);
+
             const dp    = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
             const heard = isMoving && dp <= curSound;
+
+            // FOV sight cone
+            const fovRange = g.elite ? 220 : 150;
+            const fovHalf  = g.elite ? Math.PI / 3 : Math.PI / 4;
+            const toPlAng  = Math.atan2(player.y - g.y, player.x - g.x);
+            const angDiff  = Math.abs(Phaser.Math.Angle.Wrap(toPlAng - (g.faceAngle || 0)));
+            const seen     = !transitioning && dp < fovRange && angDiff < fovHalf;
+
+            // Grenade distraction
+            const grNoise = activeGrenades.find(ag =>
+                Phaser.Math.Distance.Between(ag.x, ag.y, g.x, g.y) <= curSound
+            );
 
             if (g.state === 'PATROL') {
                 const ps = patrolSpd(currentLevel);
@@ -623,10 +749,12 @@ class GameScene extends Phaser.Scene {
                 if (g.body.blocked.right) { g.setVelocityX(-ps); g.setVelocityY(0); }
                 if (g.body.blocked.up)    { g.setVelocityY(ps);  g.setVelocityX(0); }
                 if (g.body.blocked.down)  { g.setVelocityY(-ps); g.setVelocityX(0); }
-                if (heard) {
-                    playAlertSiren();
-                    g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null; g.alertFlash = now + 900;
-                    if (currentLevel >= 6) {
+                if (heard || seen || grNoise) {
+                    const nx = grNoise ? grNoise.x : player.x;
+                    const ny = grNoise ? grNoise.y : player.y;
+                    if (!grNoise) playAlertSiren();
+                    g.state = 'ALERT'; g.heardX = nx; g.heardY = ny; g.wallSlip = null; g.alertFlash = now + 900;
+                    if (!grNoise && currentLevel >= 6) {
                         guards.getChildren().forEach(o => {
                             if (o === g || o.state !== 'PATROL' || o.koUntil > now) return;
                             if (Phaser.Math.Distance.Between(g.x, g.y, o.x, o.y) < 200) {
@@ -637,7 +765,8 @@ class GameScene extends Phaser.Scene {
                     if (currentLevel >= 11 && !alarmFired && !alarmTime) alarmTime = now + 14000;
                 }
             } else if (g.state === 'ALERT') {
-                if (heard) { g.heardX = player.x; g.heardY = player.y; }
+                if (heard || seen) { g.heardX = player.x; g.heardY = player.y; }
+                else if (grNoise)  { g.heardX = grNoise.x; g.heardY = grNoise.y; }
                 const dt = Phaser.Math.Distance.Between(g.x, g.y, g.heardX, g.heardY);
                 if (dt < 12) {
                     g.setVelocity(0); g.state = 'WAIT'; g.waitUntil = now + 2000;
@@ -654,8 +783,10 @@ class GameScene extends Phaser.Scene {
                     }
                 }
             } else if (g.state === 'WAIT') {
-                if (heard) {
+                if (heard || seen) {
                     g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y;
+                } else if (grNoise) {
+                    g.state = 'ALERT'; g.heardX = grNoise.x; g.heardY = grNoise.y;
                 } else if (now >= g.waitUntil) {
                     g.state = 'PATROL'; g.setVelocityX(patrolSpd(currentLevel));
                 }
@@ -690,19 +821,70 @@ class GameScene extends Phaser.Scene {
                 if (Phaser.Math.Distance.Between(player.x, player.y, w.x, w.y) < r + TILE * 0.75)
                     revealGfx.strokeRect(w.x - TILE / 2, w.y - TILE / 2, TILE, TILE);
             });
+
+            // Pickups
+            keycardGrp.getChildren().forEach(kc => {
+                if (!kc.active) return;
+                if (Phaser.Math.Distance.Between(player.x, player.y, kc.x, kc.y) < r + TILE) {
+                    const kp = 0.7 + 0.3 * Math.sin(now * 0.006);
+                    revealGfx.fillStyle(0xffcc00, kp);
+                    revealGfx.fillRect(kc.x - 9, kc.y - 6, 18, 12);
+                    revealGfx.fillStyle(0x000000, 0.5);
+                    revealGfx.fillRect(kc.x - 5, kc.y - 3, 10, 6);
+                }
+            });
+            medkitGrp.getChildren().forEach(mc => {
+                if (!mc.active) return;
+                if (Phaser.Math.Distance.Between(player.x, player.y, mc.x, mc.y) < r + TILE) {
+                    revealGfx.fillStyle(0x00dd55, 0.9);
+                    revealGfx.fillRect(mc.x - 10, mc.y - 3, 20, 6);
+                    revealGfx.fillRect(mc.x - 3, mc.y - 10, 6, 20);
+                }
+            });
+            grenadeGrp.getChildren().forEach(gc => {
+                if (!gc.active) return;
+                if (Phaser.Math.Distance.Between(player.x, player.y, gc.x, gc.y) < r + TILE) {
+                    revealGfx.fillStyle(0xff8800, 0.9);
+                    revealGfx.fillCircle(gc.x, gc.y, 8);
+                    revealGfx.fillStyle(0xffffff, 0.7);
+                    revealGfx.fillRect(gc.x - 2, gc.y - 12, 4, 8);
+                }
+            });
+
+            // Active thrown grenades
+            activeGrenades.forEach(ag => {
+                const gp = 0.35 + 0.25 * Math.sin(now * 0.015);
+                revealGfx.fillStyle(0xff8800, 0.8);
+                revealGfx.fillCircle(ag.x, ag.y, 5);
+                revealGfx.lineStyle(2, 0xff8800, gp);
+                revealGfx.strokeCircle(ag.x, ag.y, 55);
+            });
+
             guards.getChildren().forEach(g => {
-                if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) < r + 20) {
+                if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) < r + 80) {
                     if (g.koUntil > now) {
                         drawKOGuard(revealGfx, g.x, g.y);
-                        // Expanding ring on KO impact
                         if (g.koFlash && g.koFlash > now) {
                             const p = 1 - (g.koFlash - now) / 280;
                             revealGfx.lineStyle(3, 0xffffff, (1 - p) * 0.9);
                             revealGfx.strokeCircle(g.x, g.y, 14 + p * 22);
                         }
                     } else {
+                        // FOV cone
+                        const fa   = g.faceAngle || 0;
+                        const fovR = g.elite ? 220 : 150;
+                        const fovA = g.elite ? Math.PI / 3 : Math.PI / 4;
+                        revealGfx.fillStyle(g.elite ? 0xffaa00 : 0xff3333, g.state === 'ALERT' ? 0.22 : 0.10);
+                        revealGfx.fillTriangle(
+                            g.x, g.y,
+                            g.x + fovR * Math.cos(fa - fovA), g.y + fovR * Math.sin(fa - fovA),
+                            g.x + fovR * Math.cos(fa + fovA), g.y + fovR * Math.sin(fa + fovA)
+                        );
                         drawGuardSprite(revealGfx, g.x, g.y);
-                        // "!" alert indicator
+                        if (g.elite) {
+                            revealGfx.fillStyle(0xffcc00, 1);
+                            revealGfx.fillRect(g.x - 3, g.y - 21, 6, 6);
+                        }
                         if (g.alertFlash && g.alertFlash > now) {
                             const a = (g.alertFlash - now) / 900;
                             revealGfx.fillStyle(0xff3333, a);
@@ -712,9 +894,31 @@ class GameScene extends Phaser.Scene {
                     }
                 }
             });
+
+            // "?" ghost markers for guards in WAIT — show where they heard noise
+            guards.getChildren().forEach(g => {
+                if (g.state !== 'WAIT' || !g.heardX) return;
+                if (Phaser.Math.Distance.Between(player.x, player.y, g.heardX, g.heardY) < r + 32) {
+                    const a = Math.min(1, (g.waitUntil - now) / 2000) * 0.8;
+                    revealGfx.fillStyle(0xffff00, a);
+                    revealGfx.fillRect(g.heardX - 4, g.heardY - 16, 8, 12);
+                    revealGfx.fillRect(g.heardX - 3, g.heardY - 3, 6, 5);
+                }
+            });
+
             if (Phaser.Math.Distance.Between(player.x, player.y, exitX, exitY) < r + TILE * 0.75) {
-                revealGfx.fillStyle(theme.exit, 0.9);
-                revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
+                if (keycardCollected) {
+                    revealGfx.fillStyle(theme.exit, 0.9);
+                    revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
+                } else {
+                    revealGfx.fillStyle(theme.exit, 0.22);
+                    revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
+                    // Lock symbol
+                    revealGfx.fillStyle(0xffcc00, 0.9);
+                    revealGfx.fillRect(exitX - 7, exitY - 2, 14, 10);
+                    revealGfx.lineStyle(3, 0xffcc00, 0.9);
+                    revealGfx.strokeCircle(exitX, exitY - 7, 6);
+                }
             }
             // Attack flash — thick glow + thin bright line that fades
             if (now < attackFlashUntil) {
@@ -770,6 +974,10 @@ class GameScene extends Phaser.Scene {
 
         weaponLabel.setText(`[ ${getWeapon(currentLevel).name} ]  SPACE`);
         scoreLabel.setText(`SCORE  ${score}`);
+        grenadeCountLabel.setText(
+            (keycardCollected ? '[ KEY ✓ ]' : '[ KEY ? ]') +
+            (playerGrenades > 0 ? `  E: ${playerGrenades} nade` : '')
+        );
         if (alarmTime) {
             alarmLabel.setText(`! ALARM IN ${Math.ceil((alarmTime - now) / 1000)}s`).setVisible(true);
         } else {
