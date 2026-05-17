@@ -1,6 +1,6 @@
 import StartScene from './StartScene.js';
 
-let player, walls, guards, wasd, keys, darkOverlay, revealGfx, exit;
+let player, walls, guards, wasd, darkOverlay, revealGfx, exit;
 let exitX, exitY;
 let currentLevel     = 1;
 let transitioning    = false;
@@ -53,7 +53,7 @@ function generateLevel(lvl) {
     grid[er][ec] = 3;
 
     // Guards: placed only in open horizontal corridors
-    const numGuards = 1 + Math.floor(lvl / 2);
+    const numGuards = 3 + Math.floor(lvl / 2);
     let placed = 0; t = 0;
     while (placed < numGuards && t < 600) {
         t++;
@@ -68,9 +68,9 @@ function generateLevel(lvl) {
     return grid;
 }
 
-const SPEEDS      = { RUN: 250, WALK: 130, CROUCH: 70 };
-const LIGHT_RADII = { RUN: 240, WALK: 130, CROUCH: 70 };
-const SOUND_RADII = { RUN: 360, WALK: 190, CROUCH: 85 };
+const SPEED       = 250;
+const LIGHT_RADIUS = 240;
+const SOUND_RADIUS = 360;
 
 function getAudio() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -403,12 +403,6 @@ class GameScene extends Phaser.Scene {
             right: Phaser.Input.Keyboard.KeyCodes.D,
         });
 
-        keys = this.input.keyboard.addKeys({
-            shift:  Phaser.Input.Keyboard.KeyCodes.SHIFT,
-            crouch: Phaser.Input.Keyboard.KeyCodes.C,
-        });
-
-        player.moveState = 'WALK';
 
         currentGlowRadius = 0;
 
@@ -431,34 +425,28 @@ class GameScene extends Phaser.Scene {
             fontSize: '13px', fontFamily: 'monospace', color: '#ffffff', alpha: 0.35,
         }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
 
-        this.add.text(400, 592, 'WASD · SHIFT run · C crouch', {
+        this.add.text(400, 592, 'WASD  to  move  ·  reach  the  exit', {
             fontSize: '11px', fontFamily: 'monospace', color: '#333333',
         }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
     }
 
     update() {
-        player.moveState = keys.shift.isDown  ? 'RUN'
-                         : keys.crouch.isDown ? 'CROUCH'
-                         : 'WALK';
-
-        const speed = SPEEDS[player.moveState];
         player.setVelocity(0);
-        if (wasd.left.isDown)  player.setVelocityX(-speed);
-        if (wasd.right.isDown) player.setVelocityX(speed);
-        if (wasd.up.isDown)    player.setVelocityY(-speed);
-        if (wasd.down.isDown)  player.setVelocityY(speed);
+        if (wasd.left.isDown)  player.setVelocityX(-SPEED);
+        if (wasd.right.isDown) player.setVelocityX(SPEED);
+        if (wasd.up.isDown)    player.setVelocityY(-SPEED);
+        if (wasd.down.isDown)  player.setVelocityY(SPEED);
 
-        const isMoving   = wasd.left.isDown || wasd.right.isDown ||
-                           wasd.up.isDown   || wasd.down.isDown;
-        const glowTarget  = isMoving ? LIGHT_RADII[player.moveState] : 0;
-        const soundRadius = SOUND_RADII[player.moveState];
+        const isMoving    = wasd.left.isDown || wasd.right.isDown ||
+                            wasd.up.isDown   || wasd.down.isDown;
+        const glowTarget  = isMoving ? LIGHT_RADIUS : 0;
         const now         = this.time.now;
 
         currentGlowRadius += (glowTarget - currentGlowRadius) * 0.14;
 
         guards.getChildren().forEach(g => {
             const dp    = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
-            const heard = isMoving && dp <= soundRadius;
+            const heard = isMoving && dp <= SOUND_RADIUS;
 
             if (g.state === 'PATROL') {
                 if (g.body.blocked.left)  { g.setVelocityX(90);  g.setVelocityY(0); }
@@ -536,8 +524,7 @@ class GameScene extends Phaser.Scene {
         drawPlayerSprite(revealGfx, player.x, player.y);
 
         if (isMoving) {
-            const cd = player.moveState === 'RUN' ? 190 : player.moveState === 'CROUCH' ? 480 : 330;
-            if (Date.now() - lastPulse > cd) { lastPulse = Date.now(); playFootstep(player.moveState); }
+            if (Date.now() - lastPulse > 190) { lastPulse = Date.now(); playFootstep('RUN'); }
         }
 
         // Tension: pulsing red vignette + heartbeat when any guard is alerted

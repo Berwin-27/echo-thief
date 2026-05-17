@@ -59,14 +59,12 @@ export default class StartScene extends Phaser.Scene {
         this.add.text(cx, 318, [
             'HOW  TO  PLAY',
             '',
-            '  C              Crouch   dim glow  ·  quiet',
-            '  WASD           Walk     medium    ·  audible',
-            '  WASD + SHIFT   Run      bright    ·  loud',
+            '  WASD   move  ·  moving makes noise  ·  noise alerts guards',
             '',
             'Guards are blind — but they hear every step.',
             'Reach the GREEN EXIT to escape each floor.',
             '',
-            '5 floors  ·  each harder than the last',
+            '20 floors  ·  each harder than the last',
         ].join('\n'), {
             fontSize: '13px', fontFamily: 'monospace',
             color: '#555555', align: 'center', lineSpacing: 7,
