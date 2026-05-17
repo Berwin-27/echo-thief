@@ -30,6 +30,14 @@ let playerGrenades = 0;
 let grenadeKey;
 let grenadeCountLabel;
 let activeGrenades = [];
+let guardKOs      = 0;
+let anyAlerted    = false;
+let lastKOTime    = 0;
+let comboCount    = 1;
+let guardRipples  = [];
+let worldParticles = [];
+let playerDead    = false;
+let playerDeadAt  = 0;
 
 const TILE = 64;
 
@@ -354,6 +362,15 @@ function playDamageSound() {
     osc.start(); osc.stop(ctx.currentTime + 0.12);
 }
 
+function spawnParticles(x, y, color, count = 6) {
+    const born = Date.now();
+    for (let i = 0; i < count; i++) {
+        const ang = (Math.PI * 2 * i / count) + Math.random() * 0.9;
+        const spd = 1.8 + Math.random() * 2.2;
+        worldParticles.push({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, color, born, life: 280 + Math.random() * 180 });
+    }
+}
+
 function getLevelTheme(lvl) {
     if (lvl <= 5)  return { wall: 0xffffff, glow: 0xffffff, exit: 0x00aa44, tension: 0xcc0000 };
     if (lvl <= 10) return { wall: 0x44aaff, glow: 0x2266bb, exit: 0x00ccff, tension: 0x0055cc };
@@ -453,6 +470,8 @@ class GameScene extends Phaser.Scene {
         playerHP = 100; attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
         levelStartTime = Date.now();
         keycardCollected = false; playerGrenades = 0; activeGrenades = [];
+        guardKOs = 0; anyAlerted = false; lastKOTime = 0; comboCount = 1;
+        guardRipples = []; worldParticles = []; playerDead = false; playerDeadAt = 0;
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -539,13 +558,17 @@ class GameScene extends Phaser.Scene {
             this.cameras.main.shake(200, 0.014);
             this.cameras.main.flash(100, 255, 40, 40);
             playDamageSound();
+            spawnParticles(player.x, player.y, 0xff2222, 8);
             const dmgTxt = this.add.text(player.x, player.y - 10, '-15', {
                 fontSize: '15px', fontFamily: 'monospace', color: '#ff4444',
             }).setDepth(20).setOrigin(0.5);
             this.tweens.add({ targets: dmgTxt, y: player.y - 55, alpha: 0, duration: 750, onComplete: () => dmgTxt.destroy() });
             if (playerHP <= 0 && !transitioning) {
                 transitioning = true;
-                this.time.delayedCall(200, () => this.scene.restart({}));
+                playerDead = true; playerDeadAt = Date.now();
+                this.cameras.main.shake(420, 0.026);
+                this.cameras.main.flash(280, 255, 0, 0);
+                this.time.delayedCall(700, () => this.scene.restart({}));
             }
         });
 
@@ -587,38 +610,66 @@ class GameScene extends Phaser.Scene {
                 return;
             }
             transitioning = true;
-            const elapsed = (Date.now() - levelStartTime) / 1000;
-            const timeBonus = Math.max(0, Math.round(3000 * (1 - elapsed / 60)));
-            const lvScore = 500 + timeBonus;
+            this.physics.world.pause();
+
+            const elapsed      = (Date.now() - levelStartTime) / 1000;
+            const timeBonus    = Math.max(0, Math.round(3000 * (1 - elapsed / 60)));
+            const stealthBonus = anyAlerted ? 0 : 1000;
+            const lvScore      = 500 + timeBonus + stealthBonus;
             score += lvScore;
-            const bonusTxt = this.add.text(400, 280, `+${lvScore}`, {
-                fontSize: '22px', fontFamily: 'monospace', color: '#ffcc00',
-            }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
-            this.tweens.add({ targets: bonusTxt, y: 220, alpha: 0, duration: 800, onComplete: () => bonusTxt.destroy() });
-            playVictory();
-            this.cameras.main.flash(500);
-            if (currentLevel < 20) {
-                currentLevel++;
-                this.time.delayedCall(500, () => this.scene.restart({}));
-            } else {
-                this.time.delayedCall(500, () => {
-                    this.physics.world.pause();
-                    this.add.text(400, 240, 'YOU ESCAPED\nTHE DARKNESS!', {
-                        fontSize: '38px', fontFamily: 'monospace',
-                        color: '#ffffff', align: 'center',
-                    }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
-                    this.add.text(400, 370, `FINAL SCORE:  ${score}`, {
-                        fontSize: '20px', fontFamily: 'monospace', color: '#ffcc00',
-                    }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
-                    this.add.text(400, 430, 'PRESS ANY KEY TO PLAY AGAIN', {
-                        fontSize: '15px', fontFamily: 'monospace', color: '#888888',
-                    }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
-                    this.input.keyboard.once('keydown', () => {
-                        stopAmbientMusic();
-                        this.scene.start('StartScene');
+
+            // Floor summary card
+            const bg = this.add.graphics().setDepth(19).setScrollFactor(0);
+            bg.fillStyle(0x000000, 0.88);
+            bg.fillRect(175, 155, 450, 290);
+            bg.lineStyle(1, 0x333333, 1);
+            bg.strokeRect(175, 155, 450, 290);
+
+            this.add.text(400, 185, `FLOOR  ${currentLevel}  COMPLETE`, {
+                fontSize: '16px', fontFamily: 'monospace', color: '#ffffff',
+            }).setOrigin(0.5).setDepth(19).setScrollFactor(0);
+
+            const bodyLines = [
+                `time          ${Math.round(elapsed)}s`,
+                `guards KO'd   ${guardKOs}`,
+                '',
+                `time bonus    +${timeBonus}`,
+                stealthBonus > 0 ? `stealth run   +${stealthBonus}` : null,
+                `base          +500`,
+                '',
+                `floor total   +${lvScore}`,
+            ].filter(l => l !== null).join('\n');
+
+            this.add.text(400, 240, bodyLines, {
+                fontSize: '13px', fontFamily: 'monospace', color: '#888888',
+                align: 'center', lineSpacing: 6,
+            }).setOrigin(0.5, 0).setDepth(19).setScrollFactor(0);
+
+            this.time.delayedCall(2000, () => {
+                playVictory();
+                this.cameras.main.flash(500);
+                if (currentLevel < 20) {
+                    currentLevel++;
+                    this.time.delayedCall(500, () => this.scene.restart({}));
+                } else {
+                    this.time.delayedCall(500, () => {
+                        this.add.text(400, 240, 'YOU ESCAPED\nTHE DARKNESS!', {
+                            fontSize: '38px', fontFamily: 'monospace',
+                            color: '#ffffff', align: 'center',
+                        }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                        this.add.text(400, 375, `FINAL SCORE:  ${score}`, {
+                            fontSize: '20px', fontFamily: 'monospace', color: '#ffcc00',
+                        }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                        this.add.text(400, 430, 'PRESS ANY KEY TO PLAY AGAIN', {
+                            fontSize: '15px', fontFamily: 'monospace', color: '#888888',
+                        }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+                        this.input.keyboard.once('keydown', () => {
+                            stopAmbientMusic();
+                            this.scene.start('StartScene');
+                        });
                     });
-                });
-            }
+                }
+            });
         });
 
         wasd = this.input.keyboard.addKeys({
@@ -703,11 +754,26 @@ class GameScene extends Phaser.Scene {
                     g.koUntil = now + koMs(currentLevel);
                     g.state   = 'KO';
                     g.setVelocity(0);
-                    score += g.elite ? 400 : 200;
+                    // Combo scoring
+                    const timeSince = now - lastKOTime;
+                    comboCount = timeSince < 3000 ? comboCount + 1 : 1;
+                    lastKOTime = now;
+                    const baseScore = g.elite ? 400 : 200;
+                    const mult      = 1 + (comboCount - 1) * 0.5;
+                    score += Math.round(baseScore * mult);
+                    guardKOs++;
+                    spawnParticles(g.x, g.y, 0xffffff, 6);
+                    if (comboCount > 1) {
+                        const ct = this.add.text(g.x, g.y - 28, `x${comboCount}  COMBO`, {
+                            fontSize: '13px', fontFamily: 'monospace', color: '#ffcc00',
+                        }).setDepth(20).setOrigin(0.5);
+                        this.tweens.add({ targets: ct, y: g.y - 65, alpha: 0, duration: 700, onComplete: () => ct.destroy() });
+                    }
                 } else {
                     g.koUntil = now + 500;
                     g.state   = 'KO';
                     g.setVelocity(0);
+                    spawnParticles(g.x, g.y, 0xff8800, 4);
                 }
             });
         }
@@ -752,7 +818,7 @@ class GameScene extends Phaser.Scene {
                 if (heard || seen || grNoise) {
                     const nx = grNoise ? grNoise.x : player.x;
                     const ny = grNoise ? grNoise.y : player.y;
-                    if (!grNoise) playAlertSiren();
+                    if (!grNoise) { playAlertSiren(); anyAlerted = true; }
                     g.state = 'ALERT'; g.heardX = nx; g.heardY = ny; g.wallSlip = null; g.alertFlash = now + 900;
                     if (!grNoise && currentLevel >= 6) {
                         guards.getChildren().forEach(o => {
@@ -784,6 +850,7 @@ class GameScene extends Phaser.Scene {
                 }
             } else if (g.state === 'WAIT') {
                 if (heard || seen) {
+                    anyAlerted = true;
                     g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y;
                 } else if (grNoise) {
                     g.state = 'ALERT'; g.heardX = grNoise.x; g.heardY = grNoise.y;
@@ -792,6 +859,22 @@ class GameScene extends Phaser.Scene {
                 }
             }
         });
+
+        // Guard footstep ripples
+        guards.getChildren().forEach(g => {
+            if (g.koUntil > now) return;
+            if (g.body.velocity.x !== 0 || g.body.velocity.y !== 0) {
+                if (now - (g.lastRipple || 0) > 480) {
+                    g.lastRipple = now;
+                    guardRipples.push({ x: g.x, y: g.y, startAt: now });
+                }
+            }
+        });
+        guardRipples = guardRipples.filter(rp => now - rp.startAt < 800);
+
+        // Update world particles
+        worldParticles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vx *= 0.88; p.vy *= 0.88; });
+        worldParticles = worldParticles.filter(p => Date.now() - p.born < p.life);
 
         // Alarm fires (lvl 11+): all non-KO guards instantly rush player
         if (alarmTime && now >= alarmTime) {
@@ -851,6 +934,25 @@ class GameScene extends Phaser.Scene {
                 }
             });
 
+            // Guard footstep ripples — positional tell even through walls
+            guardRipples.forEach(rp => {
+                const prog = (now - rp.startAt) / 800;
+                const rr   = prog * 42;
+                if (Phaser.Math.Distance.Between(player.x, player.y, rp.x, rp.y) < r + rr + 24) {
+                    revealGfx.lineStyle(1, 0xff3333, (1 - prog) * 0.26);
+                    revealGfx.strokeCircle(rp.x, rp.y, rr);
+                }
+            });
+
+            // World particles (KO impact, damage)
+            const dnow = Date.now();
+            worldParticles.forEach(p => {
+                if (Phaser.Math.Distance.Between(player.x, player.y, p.x, p.y) > r + 20) return;
+                const pa = Math.max(0, 1 - (dnow - p.born) / p.life);
+                revealGfx.fillStyle(p.color, pa);
+                revealGfx.fillRect(p.x - 2, p.y - 2, 5, 5);
+            });
+
             // Active thrown grenades
             activeGrenades.forEach(ag => {
                 const gp = 0.35 + 0.25 * Math.sin(now * 0.015);
@@ -908,7 +1010,8 @@ class GameScene extends Phaser.Scene {
 
             if (Phaser.Math.Distance.Between(player.x, player.y, exitX, exitY) < r + TILE * 0.75) {
                 if (keycardCollected) {
-                    revealGfx.fillStyle(theme.exit, 0.9);
+                    const exitPulse = 0.72 + 0.22 * Math.sin(now * 0.004);
+                    revealGfx.fillStyle(theme.exit, exitPulse);
                     revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
                 } else {
                     revealGfx.fillStyle(theme.exit, 0.22);
@@ -934,7 +1037,14 @@ class GameScene extends Phaser.Scene {
                 revealGfx.fillCircle(ex, ey, 5);
             }
         }
-        drawPlayerSprite(revealGfx, player.x, player.y);
+        if (playerDead) {
+            const dt = Math.max(0, 1 - (Date.now() - playerDeadAt) / 700);
+            drawPlayerSprite(revealGfx, player.x, player.y + (1 - dt) * 14);
+            revealGfx.fillStyle(0xcc0000, (1 - dt) * 0.55);
+            revealGfx.fillRect(player.x - 8, player.y + (1 - dt) * 14 - 14, 16, 26);
+        } else {
+            drawPlayerSprite(revealGfx, player.x, player.y);
+        }
         if (isMoving) {
             const pulse = 0.20 + 0.10 * Math.sin(now * 0.008);
             revealGfx.fillStyle(0xff8800, pulse * 0.08);
