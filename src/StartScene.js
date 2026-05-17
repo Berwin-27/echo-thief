@@ -59,12 +59,13 @@ export default class StartScene extends Phaser.Scene {
         this.add.text(cx, 318, [
             'HOW  TO  PLAY',
             '',
-            '  WASD   move  ·  moving makes noise  ·  noise alerts guards',
+            '  WASD    move  ·  noise alerts guards',
+            '  SPACE   attack the direction you\'re moving',
             '',
-            'Guards are blind — but they hear every step.',
+            'Guards deal damage — knock them out first.',
             'Reach the GREEN EXIT to escape each floor.',
             '',
-            '20 floors  ·  each harder than the last',
+            'New weapon every 5 floors  ·  20 floors total',
         ].join('\n'), {
             fontSize: '13px', fontFamily: 'monospace',
             color: '#555555', align: 'center', lineSpacing: 7,

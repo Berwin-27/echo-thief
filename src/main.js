@@ -12,6 +12,14 @@ let ambientTimer      = null;
 let currentGlowRadius = 0;
 let tensionOverlay;
 let mapW, mapH;
+let playerHP         = 100;
+let lastDamageTime   = 0;
+let attackCooldown   = 0;
+let attackFlashUntil = 0;
+let lastMoveX = 1,  lastMoveY = 0;
+let alarmTime        = 0;
+let alarmFired       = false;
+let hpBarGfx, weaponLabel, alarmLabel, spaceKey;
 
 const TILE = 64;
 
@@ -232,6 +240,69 @@ function startAmbientMusic() {
     whisper();
 }
 
+function getWeapon(lvl) {
+    if (lvl <= 5)  return { name: 'FIST',   range: 48,  cooldown: 650  };
+    if (lvl <= 10) return { name: 'KNIFE',  range: 72,  cooldown: 520  };
+    if (lvl <= 15) return { name: 'TASER',  range: 130, cooldown: 1100 };
+    return              { name: 'PISTOL', range: 270, cooldown: 900  };
+}
+function patrolSpd(lvl) { return lvl >= 11 ? 120 : 90; }
+function alertSpd(lvl)  { return lvl >= 11 ? 200 : 150; }
+function koMs(lvl)      { return lvl >= 16 ? 4000 : 8000; }
+
+function playAttackSound(name) {
+    const ctx = getAudio();
+    if (name === 'FIST') {
+        const len = Math.floor(ctx.sampleRate * 0.06);
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const d   = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+        const src = ctx.createBufferSource(); src.buffer = buf;
+        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 220;
+        const g = ctx.createGain(); g.gain.value = 0.75;
+        src.connect(f); f.connect(g); g.connect(ctx.destination); src.start();
+    } else if (name === 'KNIFE') {
+        const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.connect(g); g.connect(ctx.destination);
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(900, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + 0.09);
+        g.gain.setValueAtTime(0.28, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.11);
+        osc.start(); osc.stop(ctx.currentTime + 0.11);
+    } else if (name === 'TASER') {
+        const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.connect(g); g.connect(ctx.destination);
+        osc.type = 'square';
+        [0, 0.04, 0.08, 0.12, 0.16].forEach((t, i) =>
+            osc.frequency.setValueAtTime(i % 2 ? 600 : 220, ctx.currentTime + t)
+        );
+        g.gain.setValueAtTime(0.22, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+        osc.start(); osc.stop(ctx.currentTime + 0.22);
+    } else {
+        const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.connect(g); g.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(180, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.07);
+        g.gain.setValueAtTime(0.18, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.09);
+        osc.start(); osc.stop(ctx.currentTime + 0.09);
+    }
+}
+
+function drawKOGuard(gfx, x, y) {
+    gfx.fillStyle(0x555555, 0.8);
+    gfx.fillRect(x - 13, y - 4, 26, 9);
+    gfx.fillStyle(0x666666, 0.9);
+    gfx.fillRect(x - 14, y - 5, 10, 10);
+    gfx.fillStyle(0xaaaaaa, 0.55);
+    gfx.fillRect(x + 4,  y - 11, 5, 2);
+    gfx.fillRect(x + 7,  y - 15, 5, 2);
+    gfx.fillRect(x + 10, y - 19, 5, 2);
+}
+
 function drawGuardSprite(gfx, x, y) {
     // Red Mario cap
     gfx.fillStyle(0xcc2200, 1);
@@ -308,8 +379,9 @@ class GameScene extends Phaser.Scene {
     preload() {}
 
     create(data) {
-        if (data && data.newGame) { currentLevel = 1; startAmbientMusic(); }
+        if (data && data.newGame) { currentLevel = 1; playerHP = 100; startAmbientMusic(); }
         transitioning = false;
+        attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -349,8 +421,9 @@ class GameScene extends Phaser.Scene {
                 } else if (cell === 4) {
                     const g = guards.create(x, y, 'guard');
                     g.setCollideWorldBounds(true);
-                    g.setVelocityX(90);
-                    g.state = 'PATROL';
+                    g.setVelocityX(patrolSpd(currentLevel));
+                    g.state   = 'PATROL';
+                    g.koUntil = 0;
                     g.setAlpha(0);
                 } else if (cell === 3) {
                     exit = this.add.rectangle(x, y, TILE, TILE, 0x00aa44, 0);
@@ -363,11 +436,17 @@ class GameScene extends Phaser.Scene {
         this.physics.add.collider(player, walls);
         this.physics.add.collider(guards, walls);
 
-        this.physics.add.overlap(player, guards, () => {
-            if (transitioning) return;
-            transitioning = true;
-            this.cameras.main.flash(300, 255, 0, 0);
-            this.time.delayedCall(300, () => this.scene.restart({}));
+        this.physics.add.overlap(player, guards, (pl, g) => {
+            if (transitioning || g.koUntil > this.time.now) return;
+            const t = Date.now();
+            if (t - lastDamageTime < 1500) return;
+            lastDamageTime = t;
+            playerHP = Math.max(0, playerHP - 25);
+            this.cameras.main.flash(120, 255, 50, 50);
+            if (playerHP <= 0 && !transitioning) {
+                transitioning = true;
+                this.time.delayedCall(200, () => this.scene.restart({}));
+            }
         });
 
         this.physics.add.overlap(player, exit, () => {
@@ -402,7 +481,7 @@ class GameScene extends Phaser.Scene {
             left:  Phaser.Input.Keyboard.KeyCodes.A,
             right: Phaser.Input.Keyboard.KeyCodes.D,
         });
-
+        spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
         currentGlowRadius = 0;
 
@@ -414,8 +493,14 @@ class GameScene extends Phaser.Scene {
         revealGfx = this.add.graphics();
         revealGfx.setDepth(11);
 
-        // Screen-space red vignette for tension — drawn over everything
         tensionOverlay = this.add.graphics().setDepth(15).setScrollFactor(0);
+        hpBarGfx       = this.add.graphics().setDepth(16).setScrollFactor(0);
+        this.add.text(14, 7, 'HP', { fontSize: '9px', fontFamily: 'monospace', color: '#555555' })
+            .setDepth(16).setScrollFactor(0);
+        weaponLabel = this.add.text(786, 8, '', { fontSize: '11px', fontFamily: 'monospace', color: '#555555' })
+            .setOrigin(1, 0.5).setDepth(16).setScrollFactor(0);
+        alarmLabel = this.add.text(400, 26, '', { fontSize: '13px', fontFamily: 'monospace', color: '#ff4444' })
+            .setOrigin(0.5).setDepth(16).setScrollFactor(0).setVisible(false);
 
         // Camera follows player, bounded to the world
         this.cameras.main.startFollow(player, true);
@@ -432,65 +517,102 @@ class GameScene extends Phaser.Scene {
 
     update() {
         player.setVelocity(0);
-        if (wasd.left.isDown)  player.setVelocityX(-SPEED);
-        if (wasd.right.isDown) player.setVelocityX(SPEED);
-        if (wasd.up.isDown)    player.setVelocityY(-SPEED);
-        if (wasd.down.isDown)  player.setVelocityY(SPEED);
+        let dirX = 0, dirY = 0;
+        if (wasd.left.isDown)  { player.setVelocityX(-SPEED); dirX -= 1; }
+        if (wasd.right.isDown) { player.setVelocityX( SPEED); dirX += 1; }
+        if (wasd.up.isDown)    { player.setVelocityY(-SPEED); dirY -= 1; }
+        if (wasd.down.isDown)  { player.setVelocityY( SPEED); dirY += 1; }
+        if (dirX !== 0 || dirY !== 0) {
+            const len = Math.sqrt(dirX * dirX + dirY * dirY);
+            lastMoveX = dirX / len; lastMoveY = dirY / len;
+        }
 
-        const isMoving    = wasd.left.isDown || wasd.right.isDown ||
-                            wasd.up.isDown   || wasd.down.isDown;
-        const glowTarget  = isMoving ? LIGHT_RADIUS : 0;
-        const now         = this.time.now;
-
+        const isMoving   = dirX !== 0 || dirY !== 0;
+        const glowTarget = isMoving ? LIGHT_RADIUS : 0;
+        const now        = this.time.now;
         currentGlowRadius += (glowTarget - currentGlowRadius) * 0.14;
 
+        // Attack (SPACE) — hits guards in front within weapon range
+        if (Phaser.Input.Keyboard.JustDown(spaceKey) && now >= attackCooldown) {
+            const wp = getWeapon(currentLevel);
+            attackCooldown   = now + wp.cooldown;
+            attackFlashUntil = now + 140;
+            playAttackSound(wp.name);
+            guards.getChildren().forEach(g => {
+                if (g.koUntil > now) return;
+                const dist = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
+                if (dist > wp.range) return;
+                const dx = (g.x - player.x) / dist;
+                const dy = (g.y - player.y) / dist;
+                if (dx * lastMoveX + dy * lastMoveY > 0.2) {
+                    g.koUntil = now + koMs(currentLevel);
+                    g.state   = 'KO';
+                    g.setVelocity(0);
+                }
+            });
+        }
+
+        // Guard AI
         guards.getChildren().forEach(g => {
+            if (g.koUntil > now) { g.setVelocity(0); return; }
+            if (g.state === 'KO') { g.state = 'PATROL'; g.koUntil = 0; g.setVelocityX(patrolSpd(currentLevel)); }
+
             const dp    = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
             const heard = isMoving && dp <= SOUND_RADIUS;
 
             if (g.state === 'PATROL') {
-                if (g.body.blocked.left)  { g.setVelocityX(90);  g.setVelocityY(0); }
-                if (g.body.blocked.right) { g.setVelocityX(-90); g.setVelocityY(0); }
-                if (g.body.blocked.up)    { g.setVelocityY(90);  g.setVelocityX(0); }
-                if (g.body.blocked.down)  { g.setVelocityY(-90); g.setVelocityX(0); }
+                const ps = patrolSpd(currentLevel);
+                if (g.body.blocked.left)  { g.setVelocityX(ps);  g.setVelocityY(0); }
+                if (g.body.blocked.right) { g.setVelocityX(-ps); g.setVelocityY(0); }
+                if (g.body.blocked.up)    { g.setVelocityY(ps);  g.setVelocityX(0); }
+                if (g.body.blocked.down)  { g.setVelocityY(-ps); g.setVelocityX(0); }
                 if (heard) {
                     playAlertSiren();
-                    g.state  = 'ALERT';
-                    g.heardX = player.x;
-                    g.heardY = player.y;
-                    g.wallSlip = null;
+                    g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null;
+                    if (currentLevel >= 6) {
+                        guards.getChildren().forEach(o => {
+                            if (o === g || o.state !== 'PATROL' || o.koUntil > now) return;
+                            if (Phaser.Math.Distance.Between(g.x, g.y, o.x, o.y) < 200) {
+                                o.state = 'ALERT'; o.heardX = player.x; o.heardY = player.y; o.wallSlip = null;
+                            }
+                        });
+                    }
+                    if (currentLevel >= 11 && !alarmFired && !alarmTime) alarmTime = now + 14000;
                 }
             } else if (g.state === 'ALERT') {
                 if (heard) { g.heardX = player.x; g.heardY = player.y; }
                 const dt = Phaser.Math.Distance.Between(g.x, g.y, g.heardX, g.heardY);
                 if (dt < 12) {
-                    g.setVelocity(0);
-                    g.state     = 'WAIT';
-                    g.waitUntil = now + 2000;
+                    g.setVelocity(0); g.state = 'WAIT'; g.waitUntil = now + 2000;
                 } else {
                     const ang = Phaser.Math.Angle.Between(g.x, g.y, g.heardX, g.heardY);
-                    const spd = 150;
+                    const as  = alertSpd(currentLevel);
                     if (!g.body.blocked.none) {
-                        // Slide perpendicular to the wall to navigate around it
                         if (!g.wallSlip) g.wallSlip = Math.random() < 0.5 ? 1 : -1;
                         const slip = ang + g.wallSlip * Math.PI / 2;
-                        g.setVelocity(Math.cos(slip) * spd, Math.sin(slip) * spd);
+                        g.setVelocity(Math.cos(slip) * as, Math.sin(slip) * as);
                     } else {
                         g.wallSlip = null;
-                        g.setVelocity(Math.cos(ang) * spd, Math.sin(ang) * spd);
+                        g.setVelocity(Math.cos(ang) * as, Math.sin(ang) * as);
                     }
                 }
             } else if (g.state === 'WAIT') {
                 if (heard) {
-                    g.state  = 'ALERT';
-                    g.heardX = player.x;
-                    g.heardY = player.y;
+                    g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y;
                 } else if (now >= g.waitUntil) {
-                    g.state = 'PATROL';
-                    g.setVelocityX(90);
+                    g.state = 'PATROL'; g.setVelocityX(patrolSpd(currentLevel));
                 }
             }
         });
+
+        // Alarm fires (lvl 11+): all non-KO guards instantly rush player
+        if (alarmTime && now >= alarmTime) {
+            alarmTime = 0; alarmFired = true;
+            guards.getChildren().forEach(g => {
+                if (g.koUntil > now) return;
+                g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null;
+            });
+        }
 
         darkOverlay.clear();
         darkOverlay.fillStyle(0x000000, 1);
@@ -508,36 +630,49 @@ class GameScene extends Phaser.Scene {
                 if (Phaser.Math.Distance.Between(player.x, player.y, w.x, w.y) < r + TILE * 0.75)
                     revealGfx.strokeRect(w.x - TILE / 2, w.y - TILE / 2, TILE, TILE);
             });
-            // Guards within radius
             guards.getChildren().forEach(g => {
                 if (Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y) < r + 14) {
-                    drawGuardSprite(revealGfx, g.x, g.y);
+                    if (g.koUntil > now) drawKOGuard(revealGfx, g.x, g.y);
+                    else                 drawGuardSprite(revealGfx, g.x, g.y);
                 }
             });
-            // Exit within radius
             if (Phaser.Math.Distance.Between(player.x, player.y, exitX, exitY) < r + TILE * 0.75) {
                 revealGfx.fillStyle(0x00aa44, 0.9);
                 revealGfx.fillRect(exitX - TILE / 2, exitY - TILE / 2, TILE, TILE);
             }
+            // Attack flash
+            if (now < attackFlashUntil) {
+                const wp = getWeapon(currentLevel);
+                revealGfx.lineStyle(3, 0xffffff, 0.9);
+                revealGfx.lineBetween(player.x, player.y,
+                    player.x + lastMoveX * wp.range, player.y + lastMoveY * wp.range);
+            }
         }
-        // Player always visible at light centre
         drawPlayerSprite(revealGfx, player.x, player.y);
 
-        if (isMoving) {
-            if (Date.now() - lastPulse > 190) { lastPulse = Date.now(); playFootstep('RUN'); }
-        }
+        if (isMoving && Date.now() - lastPulse > 190) { lastPulse = Date.now(); playFootstep('RUN'); }
 
-        // Tension: pulsing red vignette + heartbeat when any guard is alerted
         tensionOverlay.clear();
-        const anyAlert = guards.getChildren().some(g => g.state === 'ALERT');
+        const anyAlert = guards.getChildren().some(g => g.state === 'ALERT' && !(g.koUntil > now));
         if (anyAlert) {
             const pulse = 0.08 + 0.06 * Math.sin(now * 0.006);
             tensionOverlay.fillStyle(0xcc0000, pulse);
             tensionOverlay.fillRect(0, 0, 800, 600);
-            if (Date.now() - lastHeartbeat > 850) {
-                lastHeartbeat = Date.now();
-                playHeartbeat();
-            }
+            if (Date.now() - lastHeartbeat > 850) { lastHeartbeat = Date.now(); playHeartbeat(); }
+        }
+
+        // HP bar (top-left, 100px = full health)
+        hpBarGfx.clear();
+        hpBarGfx.fillStyle(0x1a1a1a, 1);
+        hpBarGfx.fillRect(28, 3, 100, 10);
+        hpBarGfx.fillStyle(playerHP > 60 ? 0x22cc55 : playerHP > 30 ? 0xffaa00 : 0xff2222, 1);
+        hpBarGfx.fillRect(28, 3, playerHP, 10);
+
+        weaponLabel.setText(`[ ${getWeapon(currentLevel).name} ]  SPACE`);
+        if (alarmTime) {
+            alarmLabel.setText(`! ALARM IN ${Math.ceil((alarmTime - now) / 1000)}s`).setVisible(true);
+        } else {
+            alarmLabel.setVisible(false);
         }
     }
 }
