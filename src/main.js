@@ -1426,7 +1426,7 @@ class GameScene extends Phaser.Scene {
             }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
         }
 
-        this.add.text(400, 592, 'SHIFT  walk silently  ·  E  grenade  ·  SPACE  attack', {
+        this.add.text(400, 592, 'SHIFT  sprint  ·  E  smoke  ·  SPACE  attack / backstab', {
             fontSize: '10px', fontFamily: 'monospace', color: '#333333',
         }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
 
@@ -1453,15 +1453,16 @@ class GameScene extends Phaser.Scene {
 
     update(time, delta) {
         player.setVelocity(0);
-        const walking = shiftKey && shiftKey.isDown;
+        const shiftHeld = shiftKey && shiftKey.isDown;
         const walkSpd = activePerks.includes('SOFT_STEP') ? Math.round(WALK_SPEED * 1.10) : WALK_SPEED;
         const walkSnd = activePerks.includes('SHADOW')    ? Math.round(WALK_SOUND * 0.85) : WALK_SOUND;
         const baseWalkLight = activePerks.includes('NIGHT_VISION') ? Math.round(WALK_LIGHT * 1.30) : WALK_LIGHT;
 
-        // Stamina — sprinting (no shift) drains it; exhausted forces walk until 25 refills
+        // WASD = walk (quiet, no stamina drain); SHIFT = sprint (loud, drains stamina)
         const keyMoving = wasd.left.isDown || wasd.right.isDown || wasd.up.isDown || wasd.down.isDown;
         const dt = (delta || 16) / 1000;
-        const sprinting = !walking && keyMoving && !staminaExhausted;
+        const sprinting = shiftHeld && keyMoving && !staminaExhausted;
+        const walking   = !shiftHeld; // walking = not holding shift
         if (sprinting) {
             stamina = Math.max(0, stamina - 38 * dt);
             if (stamina <= 0) staminaExhausted = true;
@@ -1470,9 +1471,9 @@ class GameScene extends Phaser.Scene {
             if (staminaExhausted && stamina >= 25) staminaExhausted = false;
         }
 
-        const curSpeed = walking ? walkSpd : (staminaExhausted ? walkSpd : SPEED);
-        const curLight = (walking || staminaExhausted) ? baseWalkLight : LIGHT_RADIUS;
-        const curSound = (walking || staminaExhausted) ? walkSnd : SOUND_RADIUS;
+        const curSpeed = sprinting ? SPEED : walkSpd;
+        const curLight = sprinting ? LIGHT_RADIUS : baseWalkLight;
+        const curSound = sprinting ? SOUND_RADIUS  : walkSnd;
         let dirX = 0, dirY = 0;
         if (wasd.left.isDown)  { player.setVelocityX(-curSpeed); dirX -= 1; }
         if (wasd.right.isDown) { player.setVelocityX( curSpeed); dirX += 1; }

@@ -248,8 +248,8 @@ export default class StartScene extends Phaser.Scene {
 
         // Controls — monospaced aligned
         const controls = this.add.text(178, 240, [
-            'WASD       run  (drains stamina bar)',
-            'SHIFT      walk silently  ·  no stamina drain  ·  quiet',
+            'WASD       walk silently  ·  no stamina drain  ·  quiet',
+            'SHIFT      sprint  ·  fast but loud  ·  drains stamina',
             'SPACE      KO guard  ·  sneak BEHIND for instant silent KO',
             'E          smoke grenade  ·  4 sec blind cover  ·  escape tool',
         ].join('\n'), {
