@@ -56,6 +56,7 @@ let staminaExhausted = false;
 let staminaBarGfx;
 let hpNumLabel;
 let minimapGfx;
+let smokeGfx;
 let prisonProps = [];
 let lastDetectionTone = 0;
 
@@ -1018,7 +1019,7 @@ class GameScene extends Phaser.Scene {
         if (!(data && data.newGame)) playerHP = Math.min(maxHP, playerHP + (activePerks.includes('RESILIENT') ? 60 : 50));
         attackCooldown = 0; attackFlashUntil = 0; alarmTime = 0; alarmFired = false;
         levelStartTime = Date.now();
-        keycardCollected = false; playerGrenades = activePerks.includes('GRENADIER') ? 1 : 0; activeGrenades = [];
+        keycardCollected = false; playerGrenades = activePerks.includes('GRENADIER') ? 2 : 1; activeGrenades = [];
         guardKOs = 0; anyAlerted = false; lastKOTime = 0; comboCount = 1;
         guardRipples = []; worldParticles = []; playerDead = false; playerDeadAt = 0;
         totalGuards = 0; switchTriggered = false; switchUntil = 0; koRings = [];
@@ -1385,6 +1386,7 @@ class GameScene extends Phaser.Scene {
         hudBg.fillRect(0, 542, 800, 58);
 
         tensionOverlay = this.add.graphics().setDepth(15).setScrollFactor(0);
+        smokeGfx       = this.add.graphics().setDepth(13); // world-space, above dark overlay, below revealGfx
         hpBarGfx       = this.add.graphics().setDepth(16).setScrollFactor(0);
         staminaBarGfx  = this.add.graphics().setDepth(16).setScrollFactor(0);
         minimapGfx     = this.add.graphics().setDepth(16).setScrollFactor(0);
@@ -1720,39 +1722,84 @@ class GameScene extends Phaser.Scene {
         darkOverlay.fillStyle(0x000000, 1);
         darkOverlay.fillRect(0, 0, mapW, mapH);
 
+        // Smoke grenades — own world-space layer, always visible regardless of player light
+        smokeGfx.clear();
+        activeGrenades.forEach(ag => {
+            const timeLeft = (ag.expiresAt - now) / 4000;
+            if (timeLeft <= 0) return;
+            const fadeIn  = Math.min(1, (1 - timeLeft) / 0.08);
+            const fadeOut = timeLeft < 0.18 ? timeLeft / 0.18 : 1;
+            const alpha   = fadeIn * fadeOut;
+            const expand  = 0.55 + fadeIn * 0.45;
+
+            smokeGfx.fillStyle(0xaab8c0, alpha * 0.86);
+            smokeGfx.fillCircle(ag.x, ag.y, ag.radius * expand);
+            smokeGfx.fillStyle(0xd0dce0, alpha * 0.76);
+            smokeGfx.fillCircle(ag.x, ag.y, ag.radius * expand * 0.68);
+            smokeGfx.fillStyle(0xe8eff2, alpha * 0.6);
+            smokeGfx.fillCircle(ag.x, ag.y, ag.radius * expand * 0.4);
+            for (let si = 0; si < 10; si++) {
+                const sa = now * 0.0005 + si * (Math.PI * 2 / 10);
+                const sr = ag.radius * expand * (0.35 + 0.3 * Math.sin(now * 0.0009 + si * 1.5));
+                smokeGfx.fillStyle(0xbccbd4, alpha * (0.4 + 0.2 * Math.sin(now * 0.0012 + si)));
+                smokeGfx.fillCircle(ag.x + Math.cos(sa) * sr, ag.y + Math.sin(sa) * sr, 14 + si * 2.5);
+            }
+            smokeGfx.lineStyle(3, 0x8898a4, alpha * 0.5);
+            smokeGfx.strokeCircle(ag.x, ag.y, ag.radius * expand);
+        });
+
         revealGfx.clear();
         if (currentGlowRadius > 2) {
             const r = Math.round(currentGlowRadius);
 
-            // Floor and wall textures within light radius
+            // Two-tier tile rendering: full detail in light, dim silhouette beyond
+            const ambR = r * 2.8;
             if (levelGrid) {
                 for (let tr = 0; tr < levelGrid.length; tr++) {
                     for (let tc = 0; tc < levelGrid[tr].length; tc++) {
                         const tx = tc * TILE + TILE / 2;
                         const ty = tr * TILE + TILE / 2;
-                        if (Phaser.Math.Distance.Between(player.x, player.y, tx, ty) > r + TILE) continue;
+                        const dist = Phaser.Math.Distance.Between(player.x, player.y, tx, ty);
+                        if (dist > ambR + TILE) continue;
+                        const inLight = dist <= r + TILE;
                         if (levelGrid[tr][tc] === 1) {
-                            revealGfx.fillStyle(theme.wallFill, 1);
-                            revealGfx.fillRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
-                            revealGfx.lineStyle(1, theme.wallLine, 0.9);
-                            revealGfx.lineBetween(tx - TILE / 2, ty, tx + TILE / 2, ty);
-                            const bOff = (tr % 2) * (TILE / 2);
-                            revealGfx.lineBetween(tx - TILE / 2 + bOff, ty - TILE / 2, tx - TILE / 2 + bOff, ty + TILE / 2);
+                            if (inLight) {
+                                // Full-lit wall: stone block fill + horizontal mortar line + vertical bar
+                                revealGfx.fillStyle(theme.wallFill, 1);
+                                revealGfx.fillRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
+                                revealGfx.lineStyle(1, theme.wallLine, 0.9);
+                                revealGfx.lineBetween(tx - TILE / 2, ty, tx + TILE / 2, ty);
+                                const bOff = (tr % 2) * (TILE / 2);
+                                revealGfx.lineBetween(tx - TILE / 2 + bOff, ty - TILE / 2, tx - TILE / 2 + bOff, ty + TILE / 2);
+                                // Prison bar verticals — every 16px across the wall
+                                revealGfx.lineStyle(2, 0x000000, 0.28);
+                                for (let bx = tx - TILE / 2 + 16; bx < tx + TILE / 2; bx += 16)
+                                    revealGfx.lineBetween(bx, ty - TILE / 2, bx, ty + TILE / 2);
+                            } else {
+                                // Dim silhouette
+                                const fade = Math.max(0, 1 - (dist - r - TILE) / (ambR - r)) * 0.22;
+                                revealGfx.fillStyle(theme.wallFill, fade);
+                                revealGfx.fillRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
+                            }
                         } else {
-                            revealGfx.fillStyle(theme.floor, 0.95);
-                            revealGfx.fillRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
-                            revealGfx.lineStyle(1, theme.floorLine, 0.35);
-                            revealGfx.strokeRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
+                            if (inLight) {
+                                // Full-lit floor: concrete fill + grid seams
+                                revealGfx.fillStyle(theme.floor, 0.95);
+                                revealGfx.fillRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
+                                revealGfx.lineStyle(1, theme.floorLine, 0.35);
+                                revealGfx.strokeRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
+                            } else {
+                                // Dim floor silhouette
+                                const fade = Math.max(0, 1 - (dist - r - TILE) / (ambR - r)) * 0.14;
+                                revealGfx.fillStyle(theme.floor, fade);
+                                revealGfx.fillRect(tx - TILE / 2, ty - TILE / 2, TILE, TILE);
+                            }
                         }
                     }
                 }
             }
 
-            // Ambient outer haze — dim shape hint beyond the main light
-            revealGfx.fillStyle(theme.glow, 0.008);
-            revealGfx.fillCircle(player.x, player.y, r * 3.2);
-            revealGfx.fillStyle(theme.glow, 0.013);
-            revealGfx.fillCircle(player.x, player.y, r * 2.2);
+            // Soft ambient glow rings layered over the dim silhouette
             revealGfx.fillStyle(theme.glow, 0.018);
             revealGfx.fillCircle(player.x, player.y, r * 1.5);
 
@@ -1872,34 +1919,13 @@ class GameScene extends Phaser.Scene {
                 }
             });
 
-            // Prison props — beds, grates, cracks, buckets
+            // Prison props — rendered within ambient reveal radius so always visible in dim zone
             prisonProps.forEach(prop => {
-                if (Phaser.Math.Distance.Between(player.x, player.y, prop.x, prop.y) > r + TILE * 1.5) return;
+                if (Phaser.Math.Distance.Between(player.x, player.y, prop.x, prop.y) > ambR + TILE) return;
                 drawPrisonProp(revealGfx, prop);
             });
 
-            // Active smoke grenades — fills area with obscuring grey cloud
-            activeGrenades.forEach(ag => {
-                const timeLeft = (ag.expiresAt - now) / 4000;
-                if (timeLeft <= 0) return;
-                const smokeA = Math.min(timeLeft * 0.7, 0.52);
-                // Outer smoke fill
-                revealGfx.fillStyle(0x99aabb, smokeA * 0.55);
-                revealGfx.fillCircle(ag.x, ag.y, ag.radius);
-                // Inner denser core
-                revealGfx.fillStyle(0xbbcccc, smokeA * 0.35);
-                revealGfx.fillCircle(ag.x, ag.y, ag.radius * 0.6);
-                // Edge ring
-                revealGfx.lineStyle(2, 0xaabbcc, smokeA * 0.5);
-                revealGfx.strokeCircle(ag.x, ag.y, ag.radius);
-                // Swirling puff blobs
-                for (let si = 0; si < 7; si++) {
-                    const sa = now * 0.0006 + si * (Math.PI * 2 / 7);
-                    const sr = ag.radius * (0.3 + 0.25 * Math.sin(now * 0.001 + si * 1.3));
-                    revealGfx.fillStyle(0xccdddd, smokeA * 0.25);
-                    revealGfx.fillCircle(ag.x + Math.cos(sa) * sr, ag.y + Math.sin(sa) * sr, 12 + si * 2);
-                }
-            });
+            // (smoke grenades drawn on smokeGfx layer below — always visible)
 
             guards.getChildren().forEach(g => {
                 const lightsOut = switchTriggered && Date.now() < switchUntil;
