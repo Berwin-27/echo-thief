@@ -59,132 +59,253 @@ let minimapGfx;
 let smokeGfx;
 let prisonProps = [];
 let lastDetectionTone = 0;
+let footprints = [];
+let lastFootprint = 0;
+let radioWaves = [];
+let levelLayout = { corrTop: 5, corrBot: 6, openTop: 7 };
+let levelModifier  = null;
+let noiseKey;
+let playerNoisemakers = 0;
+let activeNoisemakers = [];
+let noisemakerGrp;
+let noisemakerCountLabel;
+let dragHintLabel;
+let securityCameras = [];
+let cameraGfx;
+let fpMode = false, fpGfx, tabKey;
+let crouchKey, crouching = false, crouchLabel;
+let tripwires = [];
+
+const LEVEL_MODIFIERS = [
+    null, null, null, // weight toward no modifier
+    { id: 'BLACKOUT',   name: 'BLACKOUT',   desc: 'reduced visibility' },
+    { id: 'CROWDED',    name: 'CROWDED',     desc: '+2 extra guards' },
+    { id: 'RIOT_DRILL', name: 'RIOT DRILL',  desc: 'guards start on alert' },
+    { id: 'INSPECTION', name: 'INSPECTION',  desc: 'no medkits  ·  +2000 bonus' },
+];
 
 const TILE = 64;
 
 function generateLevel(lvl) {
-    const cols = Math.min(18 + lvl * 2, 48);
-    const rows = Math.min(14 + lvl * 2, 36);
+    // === CELL-BLOCK TOPOLOGY ===
+    // Top zone: row of prison cells facing a central corridor
+    // Mid zone: wide corridor (guard patrol lane)
+    // Bottom zone: open area with scatter walls (far side of prison)
 
-    // Border walls, open interior
-    const grid = Array.from({ length: rows }, (_, r) =>
-        Array.from({ length: cols }, (_, c) =>
-            (r === 0 || r === rows - 1 || c === 0 || c === cols - 1) ? 1 : 0
-        )
-    );
+    const cellsInRow = Math.min(3 + Math.floor(lvl / 3), 7);
+    const iW = 2;  // cell interior width (tiles)
+    const iH = 2;  // cell interior height (tiles)
+    const corrH = 2; // corridor height (tiles)
 
-    grid[1][1] = 2; // player spawn, always top-left
+    // Column budget: border + cell-block (1 left wall + n*(iW+1) cols) + scatter + border
+    const cellBlockW = 1 + cellsInRow * (iW + 1);
+    const scatterW   = Math.max(8, Math.min(10 + lvl, 22));
+    const cols = Math.min(1 + cellBlockW + scatterW + 1, 48);
 
-    // Scatter wall segments (horizontal or vertical runs of 2–4 tiles)
-    const segCount = Math.min(5 + lvl * 2, 32);
-    for (let i = 0; i < segCount; i++) {
-        const r    = 1 + Math.floor(Math.random() * (rows - 2));
-        const c    = 2 + Math.floor(Math.random() * (cols - 4));
-        if (r <= 2 && c <= 3) continue; // protect spawn area
-        const len  = 2 + Math.floor(Math.random() * 3);
-        const horiz = Math.random() < 0.5;
-        for (let j = 0; j < len; j++) {
-            const wr = horiz ? r                         : Math.min(r + j, rows - 2);
-            const wc = horiz ? Math.min(c + j, cols - 2) : c;
-            if (grid[wr][wc] === 0) grid[wr][wc] = 1;
+    // Row budget: border + top cell block + corridor + scatter + border
+    const topCellH = 1 + iH + 1; // top-wall + interior + door-wall = 4
+    const scatterH = Math.max(8, Math.min(8 + Math.floor(lvl * 1.4), 26));
+    const rows = Math.min(1 + topCellH + corrH + scatterH + 1, 36);
+
+    // Derived row indices
+    const cellTopWall = 1;
+    const cellBotWall = cellTopWall + iH + 1; // = 4
+    const corrTop     = cellBotWall + 1;       // = 5
+    const corrBot     = corrTop + corrH - 1;   // = 6
+    const openTop     = corrBot + 1;           // = 7
+    const openBot     = rows - 2;
+
+    // All walls to start
+    const grid = Array.from({ length: rows }, () => Array(cols).fill(1));
+
+    const carve = (r1, c1, r2, c2) => {
+        for (let r = r1; r <= r2; r++)
+            for (let c = c1; c <= c2; c++)
+                if (r > 0 && c > 0 && r < rows - 1 && c < cols - 1) grid[r][c] = 0;
+    };
+
+    // --- TOP CELL BLOCK ---
+    // Each cell: interior cols [cStart..cStart+iW-1], rows [cellTopWall+1..cellTopWall+iH]
+    // Door: 1-tile opening at cellBotWall, center of cell
+    let cStart = 2;
+    for (let ci = 0; ci < cellsInRow && cStart + iW - 1 < cols - 1; ci++) {
+        carve(cellTopWall + 1, cStart, cellTopWall + iH, cStart + iW - 1);
+        const doorC = cStart + Math.floor(iW / 2);
+        if (cellBotWall < rows - 1) grid[cellBotWall][doorC] = 0;
+        cStart += iW + 1;
+    }
+
+    // --- MAIN CORRIDOR ---
+    carve(corrTop, 1, corrBot, cols - 2);
+
+    // --- OPEN SCATTER AREA ---
+    if (openTop <= openBot) {
+        carve(openTop, 1, openBot, cols - 2);
+
+        // Scatter walls (avoids leftmost 2 cols to keep a clear run from corridor)
+        const segCount = Math.min(3 + lvl * 2, 26);
+        for (let i = 0; i < segCount; i++) {
+            const sr = openTop + 1 + Math.floor(Math.random() * Math.max(1, openBot - openTop - 1));
+            const sc = 4 + Math.floor(Math.random() * Math.max(1, cols - 6));
+            if (sr <= 0 || sc <= 0 || sr >= rows - 1 || sc >= cols - 1) continue;
+            const len = 2 + Math.floor(Math.random() * 4);
+            const horiz = Math.random() < 0.55;
+            for (let j = 0; j < len; j++) {
+                const wr = horiz ? sr : Math.min(sr + j, openBot);
+                const wc = horiz ? Math.min(sc + j, cols - 2) : sc;
+                if (wr > openTop && wc > 1 && wr < rows - 1 && wc < cols - 1) grid[wr][wc] = 1;
+            }
+        }
+
+        // Guarantee navigability: vertical spine + horizontal mid-row
+        const vSpine = Math.max(2, Math.floor(cols * 0.28));
+        for (let r = openTop; r <= openBot; r++) grid[r][vSpine] = 0;
+        const hMid = Math.floor((openTop + openBot) / 2);
+        for (let c = 1; c < cols - 1; c++) grid[hMid][c] = 0;
+
+        // Optional second room (higher levels)
+        if (lvl > 6) {
+            const rr = openTop + 1 + Math.floor(Math.random() * Math.max(1, openBot - openTop - 3));
+            const rc = Math.floor(cols * 0.5) + Math.floor(Math.random() * Math.max(1, Math.floor(cols * 0.3)));
+            carve(rr, rc, Math.min(rr + 2, openBot), Math.min(rc + 3, cols - 2));
         }
     }
 
-    // Carve a horizontal mid-row corridor to guarantee navigability
-    const midRow = Math.floor(rows / 2);
-    for (let c = 1; c < cols - 1; c++) {
-        if (grid[midRow][c] === 1) grid[midRow][c] = 0;
-    }
+    // --- SPAWN: left side of the main corridor (easy exit, can see cells above) ---
+    grid[corrTop][1] = 2;
+    // Ensure 2-tile clear area around spawn
+    grid[corrTop][2] = 0;
+    if (corrTop + 1 <= corrBot) grid[corrTop + 1][1] = 0;
 
-    // Carve a vertical mid-column corridor — creates a + shaped open cross
-    const midCol = Math.floor(cols / 2);
-    for (let r = 1; r < rows - 1; r++) {
-        if (grid[r][midCol] === 1) grid[r][midCol] = 0;
-    }
-
-    // Carve 1–2 open rooms for structural variety
-    const numRooms = 1 + (lvl > 5 ? 1 : 0);
-    for (let ri = 0; ri < numRooms; ri++) {
-        const rr = 2 + Math.floor(Math.random() * (rows - 6));
-        const rc = 2 + Math.floor(Math.random() * (cols - 8));
-        const rh = 2 + Math.floor(Math.random() * 2);
-        const rw = 3 + Math.floor(Math.random() * 3);
-        for (let dr = 0; dr < rh; dr++)
-            for (let dc = 0; dc < rw; dc++)
-                if (grid[rr + dr] && grid[rr + dr][rc + dc] === 1) grid[rr + dr][rc + dc] = 0;
-    }
-
-    // Light switch — one per floor, placed in accessible first half
+    // --- LIGHT SWITCH ---
     let ls = 0, lt = 0;
     while (ls < 1 && lt < 300) {
         lt++;
-        const sr = 2 + Math.floor(Math.random() * (rows - 4));
-        const sc = 2 + Math.floor(Math.random() * (Math.floor(cols / 2) - 2));
-        if (grid[sr][sc] === 0) { grid[sr][sc] = 9; ls++; }
+        const sr = openTop + Math.floor(Math.random() * Math.max(1, Math.floor((openBot - openTop) / 2)));
+        const sc = 2 + Math.floor(Math.random() * Math.max(1, Math.floor(cols / 2) - 2));
+        if (sr > 0 && sc > 0 && sr < rows - 1 && sc < cols - 1 && grid[sr][sc] === 0) {
+            grid[sr][sc] = 9; ls++;
+        }
     }
 
-    // Exit: random cell in the far half of the map from the player
+    // --- BFS: find all cells reachable from spawn (corrTop,1) ---
+    const reachable = new Set();
+    {
+        const bfsQ = [[corrTop, 1]];
+        reachable.add(`${corrTop},1`);
+        while (bfsQ.length) {
+            const [br, bc] = bfsQ.shift();
+            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                const nr = br + dr, nc = bc + dc;
+                const key = `${nr},${nc}`;
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+                if (reachable.has(key) || grid[nr][nc] === 1) continue;
+                reachable.add(key);
+                bfsQ.push([nr, nc]);
+            }
+        }
+    }
+
+    // --- EXIT: far half of scatter area, must be reachable from spawn ---
     let er, ec, t = 0;
     do {
-        er = 1 + Math.floor(Math.random() * (rows - 2));
-        ec = Math.floor(cols / 2) + 1 + Math.floor(Math.random() * (Math.floor(cols / 2) - 2));
+        er = openTop + Math.floor(Math.random() * Math.max(1, openBot - openTop + 1));
+        ec = Math.floor(cols / 2) + 1 + Math.floor(Math.random() * Math.max(1, Math.floor(cols / 2) - 2));
         t++;
-    } while (grid[er][ec] !== 0 && t < 300);
-    grid[er][ec] = 3;
+    } while (t < 300 && (er <= 0 || ec <= 0 || er >= rows - 1 || ec >= cols - 1 || grid[er][ec] !== 0 || !reachable.has(`${er},${ec}`)));
+    // Fallback: pick any reachable floor cell if far-half search fails
+    if (t >= 300) {
+        for (const key of reachable) {
+            const [pr, pc] = key.split(',').map(Number);
+            if (pc >= Math.floor(cols / 2) && grid[pr][pc] === 0) { er = pr; ec = pc; t = 0; break; }
+        }
+    }
+    if (t < 300) grid[er][ec] = 3;
 
-    // Guards: placed only in open horizontal corridors
+    // --- GUARDS: majority patrol corridor, rest scatter area ---
     const isBossFloor = lvl % 5 === 0;
     const numGuards   = isBossFloor ? 1 + Math.floor(lvl / 4) : 3 + Math.floor(lvl / 2);
     let placed = 0; t = 0;
     while (placed < numGuards && t < 600) {
         t++;
-        const r = 1 + Math.floor(Math.random() * (rows - 2));
+        const useCorr = placed < Math.ceil(numGuards * 0.55) && t < 250;
+        const r = useCorr
+            ? corrTop + Math.floor(Math.random() * corrH)
+            : openTop + 1 + Math.floor(Math.random() * Math.max(1, openBot - openTop - 1));
         const c = 2 + Math.floor(Math.random() * (cols - 4));
-        if (grid[r][c] === 0 && grid[r][c - 1] === 0 && grid[r][c + 1] === 0) {
-            grid[r][c] = 4;
-            placed++;
-        }
+        if (r <= 0 || c <= 0 || r >= rows - 1 || c >= cols - 1) continue;
+        if (r <= cellBotWall + 1 && c <= 4) continue; // protect spawn cell
+        if (grid[r][c] !== 0) continue;
+        const lO = c > 1 && grid[r][c - 1] === 0;
+        const rO = c < cols - 2 && grid[r][c + 1] === 0;
+        if (useCorr && !(lO && rO)) continue;
+        grid[r][c] = 4;
+        placed++;
     }
 
-    // Boss guard — placed in far half on boss floors (multiples of 5)
     if (isBossFloor) {
         let bt = 0;
         while (bt < 600) {
             bt++;
-            const br = 2 + Math.floor(Math.random() * (rows - 4));
-            const bc = Math.floor(cols / 2) + Math.floor(Math.random() * (Math.floor(cols / 2) - 2));
-            if (grid[br][bc] === 0) { grid[br][bc] = 8; break; }
+            const br = corrTop + Math.floor(Math.random() * corrH);
+            const bc = Math.floor(cols * 0.5) + Math.floor(Math.random() * Math.max(1, Math.floor(cols * 0.38)));
+            if (bc > 0 && bc < cols - 1 && br > 0 && br < rows - 1 && grid[br] && grid[br][bc] === 0) {
+                grid[br][bc] = 8; break;
+            }
         }
     }
 
-    // Keycard — one open tile in the far half
+    // --- KEYCARD: far half scatter area, must be reachable from spawn ---
     let kr, kc, kt = 0;
     do {
-        kr = 1 + Math.floor(Math.random() * (rows - 2));
-        kc = Math.floor(cols / 2) + 1 + Math.floor(Math.random() * (Math.floor(cols / 2) - 2));
+        kr = openTop + Math.floor(Math.random() * Math.max(1, openBot - openTop + 1));
+        kc = Math.floor(cols * 0.48) + Math.floor(Math.random() * Math.max(1, Math.floor(cols * 0.44)));
         kt++;
-    } while (grid[kr][kc] !== 0 && kt < 300);
-    if (grid[kr][kc] === 0) grid[kr][kc] = 5;
+    } while (kt < 300 && (kr <= 0 || kc <= 0 || kr >= rows - 1 || kc >= cols - 1 || grid[kr][kc] !== 0 || !reachable.has(`${kr},${kc}`)));
+    // Fallback: pick any reachable floor cell (not exit) if far-half search fails
+    if (kt >= 300) {
+        for (const key of reachable) {
+            const [pr, pc] = key.split(',').map(Number);
+            if (pc >= Math.floor(cols * 0.4) && grid[pr][pc] === 0) { kr = pr; kc = pc; kt = 0; break; }
+        }
+    }
+    if (kt < 300) grid[kr][kc] = 5;
 
-    // Medkits (1-2 per level)
+    // --- MEDKITS ---
     const numMeds = 1 + (lvl % 3 === 0 ? 1 : 0);
     let pm = 0, tm = 0;
     while (pm < numMeds && tm < 300) {
         tm++;
         const mr = 1 + Math.floor(Math.random() * (rows - 2));
         const mc = 2 + Math.floor(Math.random() * (cols - 4));
-        if (grid[mr][mc] === 0) { grid[mr][mc] = 6; pm++; }
+        if (mr > 0 && mc > 0 && mr < rows - 1 && mc < cols - 1 && grid[mr][mc] === 0) {
+            grid[mr][mc] = 6; pm++;
+        }
     }
 
-    // Noise grenades (1 per level)
+    // --- GRENADES ---
     let pg = 0, tg = 0;
     while (pg < 1 && tg < 300) {
         tg++;
         const gr = 1 + Math.floor(Math.random() * (rows - 2));
         const gc = 2 + Math.floor(Math.random() * (cols - 4));
-        if (grid[gr][gc] === 0) { grid[gr][gc] = 7; pg++; }
+        if (gr > 0 && gc > 0 && gr < rows - 1 && gc < cols - 1 && grid[gr][gc] === 0) {
+            grid[gr][gc] = 7; pg++;
+        }
     }
 
+    // --- NOISE-MAKERS (pebbles) ---
+    let pnm = 0, tnm = 0;
+    while (pnm < 2 && tnm < 300) {
+        tnm++;
+        const nnr = 1 + Math.floor(Math.random() * (rows - 2));
+        const nnc = 2 + Math.floor(Math.random() * (cols - 4));
+        if (nnr > 0 && nnc > 0 && nnr < rows - 1 && nnc < cols - 1 && grid[nnr][nnc] === 0) {
+            grid[nnr][nnc] = 10; pnm++;
+        }
+    }
+
+    levelLayout = { corrTop, corrBot, openTop };
     return grid;
 }
 
@@ -467,6 +588,23 @@ function startAmbientMusic() {
         ambientTimer = setTimeout(whisper, 3500 + Math.random() * 5000);
     }
     whisper();
+
+    // Dripping water — occasional cold plop
+    function drip() {
+        if (ambientNodes.length === 0) return; // music stopped
+        const dOsc  = ctx.createOscillator();
+        const dFilt = ctx.createBiquadFilter();
+        const dGain = ctx.createGain();
+        dFilt.type = 'bandpass'; dFilt.frequency.value = 1000 + Math.random() * 700; dFilt.Q.value = 11;
+        dOsc.type = 'sine'; dOsc.frequency.value = 850 + Math.random() * 450;
+        dOsc.connect(dFilt); dFilt.connect(dGain); dGain.connect(ctx.destination);
+        dGain.gain.setValueAtTime(0, ctx.currentTime);
+        dGain.gain.linearRampToValueAtTime(0.020 + Math.random() * 0.014, ctx.currentTime + 0.005);
+        dGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.13);
+        dOsc.start(); dOsc.stop(ctx.currentTime + 0.14);
+        setTimeout(drip, 3500 + Math.random() * 7000);
+    }
+    setTimeout(drip, 2000 + Math.random() * 4000);
 }
 
 function playGuardNearby(vol, pan) {
@@ -626,19 +764,29 @@ function getLevelLocation(lvl) {
 function generateProps(grid) {
     const props = [];
     const rows = grid.length, cols = grid[0].length;
-    const spawnX = 1 * TILE + TILE / 2, spawnY = 1 * TILE + TILE / 2;
+    // Locate spawn tile dynamically
+    let spawnX = TILE * 1.5, spawnY = TILE * 1.5;
+    outer:
+    for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++)
+            if (grid[r][c] === 2) { spawnX = c * TILE + TILE / 2; spawnY = r * TILE + TILE / 2; break outer; }
+
     for (let r = 1; r < rows - 1; r++) {
         for (let c = 1; c < cols - 1; c++) {
             const wx = c * TILE + TILE / 2, wy = r * TILE + TILE / 2;
             if (grid[r][c] === 0) {
                 if (Phaser.Math.Distance.Between(wx, wy, spawnX, spawnY) < TILE * 2.5) continue;
                 const roll = Math.random();
-                if      (roll < 0.055) props.push({ type: 'BED',    x: wx, y: wy });
-                else if (roll < 0.085) props.push({ type: 'GRATE',  x: wx, y: wy });
-                else if (roll < 0.110) props.push({ type: 'BUCKET', x: wx, y: wy });
+                if      (roll < 0.038) props.push({ type: 'BED',    x: wx, y: wy });
+                else if (roll < 0.058) props.push({ type: 'TOILET', x: wx, y: wy });
+                else if (roll < 0.076) props.push({ type: 'CHAIR',  x: wx, y: wy });
+                else if (roll < 0.091) props.push({ type: 'GRATE',  x: wx, y: wy });
+                else if (roll < 0.106) props.push({ type: 'BUCKET', x: wx, y: wy });
+                else if (roll < 0.120) props.push({ type: 'BLOOD',  x: wx, y: wy, ang: Math.random() * Math.PI * 2 });
             } else if (grid[r][c] === 1) {
-                if (Math.random() < 0.10)
-                    props.push({ type: 'CRACK', x: wx, y: wy, ang: Math.random() * Math.PI, len: 6 + Math.random() * 10 });
+                const wr = Math.random();
+                if      (wr < 0.09) props.push({ type: 'CRACK', x: wx, y: wy, ang: Math.random() * Math.PI, len: 6 + Math.random() * 10 });
+                else if (wr < 0.14) props.push({ type: 'PIPE',  x: wx, y: wy, horiz: Math.random() < 0.5 });
             }
         }
     }
@@ -677,6 +825,51 @@ function drawPrisonProp(gfx, prop) {
                          x - Math.cos(ang) * len, y - Math.sin(ang) * len);
         gfx.lineBetween(x + Math.cos(ang + 0.45) * len * 0.55, y + Math.sin(ang + 0.45) * len * 0.55,
                          x + Math.cos(ang + 0.9)  * len * 0.85, y + Math.sin(ang + 0.9)  * len * 0.85);
+    } else if (type === 'TOILET') {
+        // Stainless steel prison toilet
+        gfx.fillStyle(0x1e2222, 0.88);
+        gfx.fillRect(x - 7, y - 4, 14, 11);
+        gfx.fillStyle(0x252c2c, 0.7);
+        gfx.fillRect(x - 5, y - 7, 10, 5);
+        gfx.lineStyle(1, 0x2a3434, 0.5);
+        gfx.strokeRect(x - 7, y - 4, 14, 11);
+        gfx.fillStyle(0x0e1414, 0.65);
+        gfx.fillCircle(x, y + 2, 4);
+    } else if (type === 'CHAIR') {
+        // Metal folding chair
+        gfx.fillStyle(0x141414, 0.9);
+        gfx.fillRect(x - 8, y - 2, 16, 6);
+        gfx.fillStyle(0x101010, 0.85);
+        gfx.fillRect(x - 7, y - 10, 14, 9);
+        gfx.lineStyle(1, 0x1c1c1c, 0.45);
+        gfx.strokeRect(x - 7, y - 10, 14, 9);
+        gfx.lineStyle(1, 0x111111, 0.6);
+        gfx.lineBetween(x - 7, y + 4, x - 7, y + 9);
+        gfx.lineBetween(x + 7, y + 4, x + 7, y + 9);
+    } else if (type === 'BLOOD') {
+        const ang2 = prop.ang || 0;
+        gfx.fillStyle(0x1e0000, 0.68);
+        gfx.fillCircle(x, y, 7);
+        gfx.fillStyle(0x160000, 0.5);
+        gfx.fillCircle(x + Math.cos(ang2) * 6, y + Math.sin(ang2) * 6, 4);
+        gfx.fillCircle(x + Math.cos(ang2 + 2.1) * 4, y + Math.sin(ang2 + 2.1) * 4, 3);
+        gfx.fillStyle(0x240000, 0.3);
+        gfx.fillCircle(x - Math.cos(ang2) * 8, y - Math.sin(ang2) * 8, 3);
+    } else if (type === 'PIPE') {
+        const isH = prop.horiz;
+        gfx.lineStyle(3, 0x181818, 0.72);
+        if (isH) {
+            gfx.lineBetween(x - TILE / 2, y, x + TILE / 2, y);
+            gfx.fillStyle(0x222222, 0.7);
+            gfx.fillCircle(x, y, 4);
+        } else {
+            gfx.lineBetween(x, y - TILE / 2, x, y + TILE / 2);
+            gfx.fillStyle(0x222222, 0.7);
+            gfx.fillCircle(x, y, 4);
+        }
+        gfx.lineStyle(1, 0x242424, 0.4);
+        if (isH) gfx.lineBetween(x - TILE / 2, y - 1, x + TILE / 2, y - 1);
+        else     gfx.lineBetween(x - 1, y - TILE / 2, x - 1, y + TILE / 2);
     }
 }
 
@@ -1005,6 +1198,123 @@ function drawPlayerSprite(gfx, x, y) {
     gfx.fillRect(x + 1, y - 8, 4, 4);
 }
 
+// ── DDA raycaster ──────────────────────────────────────────────────────────────
+function castRayDDA(grid, px, py, rdx, rdy) {
+    const rows = grid.length, cols = grid[0]?.length || 0;
+    let mapX = Math.floor(px / TILE), mapY = Math.floor(py / TILE);
+    const ddx = Math.abs(rdx) < 1e-10 ? 1e30 : Math.abs(1 / rdx);
+    const ddy = Math.abs(rdy) < 1e-10 ? 1e30 : Math.abs(1 / rdy);
+    let stepX, sideX, stepY, sideY, side = 0;
+    if (rdx < 0) { stepX = -1; sideX = (px / TILE - mapX) * ddx; }
+    else         { stepX =  1; sideX = (mapX + 1 - px / TILE) * ddx; }
+    if (rdy < 0) { stepY = -1; sideY = (py / TILE - mapY) * ddy; }
+    else         { stepY =  1; sideY = (mapY + 1 - py / TILE) * ddy; }
+    for (let i = 0; i < 80; i++) {
+        if (sideX < sideY) { sideX += ddx; mapX += stepX; side = 0; }
+        else               { sideY += ddy; mapY += stepY; side = 1; }
+        if (mapX < 0 || mapY < 0 || mapX >= cols || mapY >= rows) break;
+        if (grid[mapY][mapX] === 1) {
+            const perp = side === 0
+                ? (mapX - px / TILE + (1 - stepX) / 2) / rdx
+                : (mapY - py / TILE + (1 - stepY) / 2) / rdy;
+            return { dist: perp * TILE, side };
+        }
+    }
+    return { dist: 9999, side: 0 };
+}
+
+function renderFP(gfx, now, theme) {
+    const W = 800, H = 600, numCols = 160;
+    const colW = W / numCols;
+    if (!levelGrid) return;
+    const px = player.x, py = player.y;
+    const dLen = Math.hypot(lastMoveX, lastMoveY) || 1;
+    const dirX = lastMoveX / dLen, dirY = lastMoveY / dLen;
+    const planeX = -dirY * 0.66, planeY = dirX * 0.66;
+
+    // Sky / floor
+    gfx.fillStyle(0x080812, 1); gfx.fillRect(0, 0, W, H / 2);
+    gfx.fillStyle(0x05050c, 1); gfx.fillRect(0, H / 2, W, H / 2);
+
+    const zBuf = new Array(numCols).fill(9999);
+
+    for (let col = 0; col < numCols; col++) {
+        const cameraX = 2 * col / numCols - 1;
+        const rdx = dirX + planeX * cameraX;
+        const rdy = dirY + planeY * cameraX;
+        const { dist, side } = castRayDDA(levelGrid, px, py, rdx, rdy);
+        zBuf[col] = dist;
+        const lineH = Math.min(H * 5, Math.floor(H * TILE / Math.max(1, dist)));
+        const wallTop = Math.max(0, Math.floor((H - lineH) / 2));
+        const fog = Math.max(0, 1 - dist / (TILE * 14));
+        const shade = side === 1 ? fog * 0.55 : fog;
+        const base = theme.wallFill || 0x223344;
+        const wr = ((base >> 16) & 0xff) * shade;
+        const wg = ((base >> 8) & 0xff) * shade;
+        const wb = (base & 0xff) * shade;
+        gfx.fillStyle(((Math.round(wr) << 16) | (Math.round(wg) << 8) | Math.round(wb)) || 0x08101e, 1);
+        gfx.fillRect(col * colW, wallTop, colW, Math.min(H, wallTop + lineH) - wallTop);
+    }
+
+    // Guard sprites (billboard — far-to-near)
+    const sprList = [];
+    guards.getChildren().forEach(g => {
+        const dx = g.x - px, dy = g.y - py;
+        sprList.push({ dx, dy, dist2: dx * dx + dy * dy, g });
+    });
+    sprList.sort((a, b) => b.dist2 - a.dist2);
+    const invDet = 1 / (planeX * dirY - dirX * planeY);
+    sprList.forEach(({ dx, dy, g }) => {
+        const tx = invDet * (dirY * dx - dirX * dy);
+        const ty = invDet * (-planeY * dx + planeX * dy);
+        if (ty <= 0.15) return;
+        const perpPx = ty * TILE;
+        const screenX = Math.floor(W / 2 * (1 + tx / ty));
+        const sprH = Math.min(H * 4, Math.floor(H * TILE / Math.max(1, perpPx)));
+        const sprW = Math.round(sprH * 0.55);
+        const drawTop = Math.max(0, Math.floor((H - sprH) / 2));
+        const drawBot = Math.min(H, drawTop + sprH);
+        const drawLeft = screenX - Math.floor(sprW / 2);
+        const startCol = Math.max(0, Math.floor(drawLeft / colW));
+        const endCol   = Math.min(numCols - 1, Math.floor((drawLeft + sprW) / colW));
+        const isKO    = g.koUntil > now;
+        const isAlert = g.state === 'ALERT';
+        const base = isKO ? 0x223311 : isAlert ? 0xcc2200 : g.boss ? 0x882200 : 0x1a4422;
+        const fog = Math.max(0, 1 - perpPx / (TILE * 12));
+        const sr = ((base >> 16) & 0xff) * fog;
+        const sg = ((base >> 8) & 0xff) * fog;
+        const sb = (base & 0xff) * fog;
+        gfx.fillStyle(((Math.round(sr) << 16) | (Math.round(sg) << 8) | Math.round(sb)) || 0x0a100a, 1);
+        for (let col = startCol; col <= endCol; col++) {
+            if (perpPx < zBuf[col])
+                gfx.fillRect(col * colW, drawTop, colW, drawBot - drawTop);
+        }
+        if (!isKO && perpPx < TILE * 8) {
+            const eyeY = drawTop + Math.floor(sprH * 0.28);
+            const esz  = Math.max(1, Math.round(sprH * 0.06));
+            gfx.fillStyle(isAlert ? 0xff4400 : 0x00ffcc, Math.min(1, fog * 2));
+            gfx.fillRect(screenX - esz * 2, eyeY, esz, esz);
+            gfx.fillRect(screenX + esz,     eyeY, esz, esz);
+        }
+    });
+
+    // Crosshair
+    gfx.lineStyle(1, 0xffffff, 0.42);
+    gfx.lineBetween(W / 2 - 10, H / 2, W / 2 - 4, H / 2);
+    gfx.lineBetween(W / 2 + 4,  H / 2, W / 2 + 10, H / 2);
+    gfx.lineBetween(W / 2, H / 2 - 10, W / 2, H / 2 - 4);
+    gfx.lineBetween(W / 2, H / 2 + 4,  W / 2, H / 2 + 10);
+    gfx.fillStyle(0xffffff, 0.22);
+    gfx.fillRect(W / 2 - 1, H / 2 - 1, 2, 2);
+
+    // Mode badge
+    gfx.fillStyle(0x000000, 0.55);
+    gfx.fillRect(W - 108, H - 23, 104, 19);
+    gfx.lineStyle(1, 0x334455, 0.8);
+    gfx.strokeRect(W - 108, H - 23, 104, 19);
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
 class GameScene extends Phaser.Scene {
     constructor() {
         super({ key: 'GameScene' });
@@ -1024,6 +1334,10 @@ class GameScene extends Phaser.Scene {
         guardRipples = []; worldParticles = []; playerDead = false; playerDeadAt = 0;
         totalGuards = 0; switchTriggered = false; switchUntil = 0; koRings = [];
         stamina = 100; staminaExhausted = false;
+        footprints = []; radioWaves = [];
+        playerNoisemakers = 1; activeNoisemakers = []; securityCameras = [];
+        levelModifier = currentLevel <= 3 ? null :
+            LEVEL_MODIFIERS[Math.floor(Math.random() * LEVEL_MODIFIERS.length)];
 
         const gfx = this.add.graphics();
         gfx.fillStyle(0xffffff, 1);
@@ -1047,12 +1361,13 @@ class GameScene extends Phaser.Scene {
 
         this.physics.world.setBounds(0, 0, mapW, mapH);
 
-        walls      = this.physics.add.staticGroup();
-        guards     = this.physics.add.group();
-        keycardGrp = this.physics.add.staticGroup();
-        medkitGrp  = this.physics.add.staticGroup();
-        grenadeGrp = this.physics.add.staticGroup();
-        switchGrp  = this.physics.add.staticGroup();
+        walls          = this.physics.add.staticGroup();
+        guards         = this.physics.add.group();
+        keycardGrp     = this.physics.add.staticGroup();
+        medkitGrp      = this.physics.add.staticGroup();
+        grenadeGrp     = this.physics.add.staticGroup();
+        switchGrp      = this.physics.add.staticGroup();
+        noisemakerGrp  = this.physics.add.staticGroup();
 
         let elitePlaced = false;
         level.forEach((row, r) => {
@@ -1071,13 +1386,13 @@ class GameScene extends Phaser.Scene {
                     g.state      = 'PATROL';
                     g.koUntil    = 0;
                     g.faceAngle  = 0;
-                    g.hitsLeft   = 1;
+                    g.hitsLeft   = 2;
                     g.suspicion  = 0;
                     g.setAlpha(0);
                     totalGuards++;
                     if (currentLevel >= 11 && !elitePlaced) {
                         g.elite    = true;
-                        g.hitsLeft = 2;
+                        g.hitsLeft = 3;
                         elitePlaced = true;
                     }
                     // Guard variety
@@ -1106,6 +1421,14 @@ class GameScene extends Phaser.Scene {
                     g.suspicion = 0;
                     g.setAlpha(0);
                     totalGuards++;
+                    // Boss gets full-width corridor waypoints so it sweeps the whole floor
+                    const bossWPs = [];
+                    for (let dc = -(cols - 2); dc <= cols - 2; dc += 2) {
+                        const wc = c + dc;
+                        if (wc > 0 && wc < cols - 1 && level[r] && (level[r][wc] === 0 || level[r][wc] === 8))
+                            bossWPs.push({ x: wc * TILE + TILE / 2, y: r * TILE + TILE / 2 });
+                    }
+                    if (bossWPs.length >= 2) { g.waypoints = bossWPs; g.waypointIdx = 0; }
                 } else if (cell === 3) {
                     exit = this.add.rectangle(x, y, TILE, TILE, 0x00aa44, 0);
                     this.physics.add.existing(exit, true);
@@ -1126,9 +1449,81 @@ class GameScene extends Phaser.Scene {
                     const sw = this.add.rectangle(x, y, TILE, TILE, 0x000000, 0);
                     this.physics.add.existing(sw, true);
                     switchGrp.add(sw);
+                } else if (cell === 10) {
+                    const nmPick = this.add.rectangle(x, y, TILE, TILE, 0x000000, 0);
+                    this.physics.add.existing(nmPick, true);
+                    noisemakerGrp.add(nmPick);
                 }
             });
         });
+
+        // --- POST-GRID MODIFIER EFFECTS ---
+        if (levelModifier?.id === 'CROWDED') {
+            const openCells = [];
+            level.forEach((row, r) => row.forEach((cell, c) => {
+                if (cell === 0 && r >= levelLayout.openTop) openCells.push({ r, c });
+            }));
+            for (let i = 0; i < 2 && openCells.length; i++) {
+                const idx = Math.floor(Math.random() * openCells.length);
+                const { r, c } = openCells.splice(idx, 1)[0];
+                const xg = c * TILE + TILE / 2, yg = r * TILE + TILE / 2;
+                const eg = guards.create(xg, yg, 'guard');
+                eg.state = 'PATROL'; eg.koUntil = 0; eg.faceAngle = 0;
+                eg.hitsLeft = 2; eg.suspicion = 0; eg.setAlpha(0);
+                eg.setVelocityX(patrolSpd(currentLevel));
+                totalGuards++;
+            }
+        }
+        if (levelModifier?.id === 'RIOT_DRILL') {
+            guards.getChildren().forEach(g => {
+                g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null;
+            });
+            anyAlerted = true;
+        }
+        if (levelModifier?.id === 'INSPECTION') {
+            medkitGrp.clear(true, true);
+        }
+
+        // --- SECURITY CAMERAS (corridor ceiling) ---
+        const corrCeilRow = levelLayout.corrTop - 1;
+        if (corrCeilRow > 0) {
+            const cols2 = level[0].length;
+            for (let sc = 5; sc < cols2 - 5; sc += 7 + Math.floor(Math.random() * 5)) {
+                if (level[corrCeilRow] && level[corrCeilRow][sc] === 1) {
+                    securityCameras.push({
+                        x: sc * TILE + TILE / 2,
+                        y: corrCeilRow * TILE + TILE / 2,
+                        baseAngle: Math.PI / 2,
+                        faceAngle: Math.PI / 2,
+                        rotateSpeed: 0.38 + Math.random() * 0.28,
+                        rotatePhase: Math.random() * Math.PI * 2,
+                        fovRange: 170,
+                        fovHalf: Math.PI / 4.5,
+                        suspicion: 0,
+                    });
+                }
+            }
+        }
+
+        // --- LASER TRIPWIRES (floors 7+) ---
+        tripwires = [];
+        if (currentLevel >= 7) {
+            const numWires = Math.min(3, Math.floor((currentLevel - 5) / 2));
+            const corrY1 = levelLayout.corrTop * TILE;
+            const corrY2 = (levelLayout.corrBot + 1) * TILE;
+            const gCols  = level[0].length;
+            const placed = [];
+            let attempts = 0;
+            while (placed.length < numWires && attempts < 60) {
+                attempts++;
+                const wc = 5 + Math.floor(Math.random() * (gCols - 10));
+                const wx = wc * TILE + TILE / 2;
+                if (placed.some(px => Math.abs(px - wx) < TILE * 5)) continue;
+                if (level[levelLayout.corrTop]?.[wc] === 1) continue;
+                placed.push(wx);
+                tripwires.push({ x: wx, y1: corrY1, y2: corrY2, triggered: false });
+            }
+        }
 
         this.physics.add.collider(player, walls);
         this.physics.add.collider(guards, walls);
@@ -1158,6 +1553,9 @@ class GameScene extends Phaser.Scene {
                         localStorage.setItem('echoThiefFurthest', furthestFloor);
                     }
                     if (score > highScore) { highScore = score; localStorage.setItem('echoThiefHigh', score); }
+                    const _hist = JSON.parse(localStorage.getItem('echoThiefHistory') || '[]');
+                    _hist.unshift({ floor: currentLevel, score, stealth: !anyAlerted ? 'GHOST' : 'SPOTTED' });
+                    localStorage.setItem('echoThiefHistory', JSON.stringify(_hist.slice(0, 3)));
 
                     const dBg = this.add.graphics().setDepth(25).setScrollFactor(0);
                     dBg.fillStyle(0x000000, 0.95);
@@ -1230,10 +1628,20 @@ class GameScene extends Phaser.Scene {
             if (!gc.active) return;
             gc.destroy();
             playerGrenades++;
+            playTone(280, 0.04, 'triangle', 0.07);
+            playTone(420, 0.03, 'triangle', 0.05);
+        });
+
+        this.physics.add.overlap(player, noisemakerGrp, (pl, nm) => {
+            if (!nm.active) return;
+            nm.destroy();
+            playerNoisemakers++;
+            playTone(520, 0.05, 'sine', 0.06);
         });
 
         this.physics.add.overlap(player, switchGrp, (pl, sw) => {
             if (!sw.active || switchTriggered) return;
+            const swX = sw.x, swY = sw.y;
             sw.destroy();
             switchTriggered = true;
             switchUntil = Date.now() + 5000;
@@ -1242,6 +1650,16 @@ class GameScene extends Phaser.Scene {
                 fontSize: '20px', fontFamily: 'monospace', color: '#ffffff',
             }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
             this.tweens.add({ targets: swTxt, alpha: 0, duration: 1400, onComplete: () => swTxt.destroy() });
+            // Guards hear the click — those nearby rush to investigate the switch position
+            this.time.delayedCall(450, () => {
+                guards.getChildren().forEach(g => {
+                    if (g.koUntil > this.time.now) return;
+                    if (Phaser.Math.Distance.Between(swX, swY, g.x, g.y) < 340) {
+                        g.state = 'ALERT'; g.heardX = swX; g.heardY = swY; g.wallSlip = null;
+                        anyAlerted = true;
+                    }
+                });
+            });
         });
 
         this.physics.add.overlap(player, exit, () => {
@@ -1260,10 +1678,11 @@ class GameScene extends Phaser.Scene {
             transitioning = true;
             this.physics.world.pause();
 
-            const elapsed      = (Date.now() - levelStartTime) / 1000;
-            const timeBonus    = Math.max(0, Math.round(3000 * (1 - elapsed / 60)));
-            const stealthBonus = anyAlerted ? 0 : 1000;
-            const lvScore      = 500 + timeBonus + stealthBonus;
+            const elapsed        = (Date.now() - levelStartTime) / 1000;
+            const timeBonus      = Math.max(0, Math.round(3000 * (1 - elapsed / 60)));
+            const stealthBonus   = anyAlerted ? 0 : 1000;
+            const inspBonus      = levelModifier?.id === 'INSPECTION' ? 2000 : 0;
+            const lvScore        = 500 + timeBonus + stealthBonus + inspBonus;
             score += lvScore;
 
             // Floor summary card
@@ -1292,9 +1711,11 @@ class GameScene extends Phaser.Scene {
             const bodyLines = [
                 `time           ${Math.round(elapsed)}s`,
                 `guards KO'd    ${guardKOs}  /  ${totalGuards}`,
+                levelModifier ? `modifier       ${levelModifier.name}` : null,
                 '',
                 `time bonus     +${timeBonus}`,
                 stealthBonus > 0 ? `ghost bonus    +${stealthBonus}` : null,
+                inspBonus > 0 ? `insp. bonus    +${inspBonus}` : null,
                 `base           +500`,
                 '',
                 `floor total    +${lvScore}`,
@@ -1309,12 +1730,19 @@ class GameScene extends Phaser.Scene {
                 this.cameras.main.flash(500);
                 if (currentLevel < 20) {
                     currentLevel++;
-                    showPerkPick(this, () => {
+                    if (currentLevel % 3 === 0) {
+                        showPerkPick(this, () => {
+                            this.time.delayedCall(400, () => this.scene.restart({}));
+                        });
+                    } else {
                         this.time.delayedCall(400, () => this.scene.restart({}));
-                    });
+                    }
                 } else {
                     this.time.delayedCall(500, () => {
                         if (score > highScore) { highScore = score; localStorage.setItem('echoThiefHigh', score); }
+                        const _histW = JSON.parse(localStorage.getItem('echoThiefHistory') || '[]');
+                        _histW.unshift({ floor: 20, score, stealth: !anyAlerted ? 'GHOST' : 'SPOTTED', escaped: true });
+                        localStorage.setItem('echoThiefHistory', JSON.stringify(_histW.slice(0, 3)));
                         const wBg = this.add.graphics().setDepth(20).setScrollFactor(0);
                         wBg.fillStyle(0x000000, 1);
                         wBg.fillRect(0, 0, 800, 600);
@@ -1367,6 +1795,8 @@ class GameScene extends Phaser.Scene {
         spaceKey   = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
         shiftKey   = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
         grenadeKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+        noiseKey   = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
+        crouchKey  = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.C);
 
         currentGlowRadius = 0;
 
@@ -1386,7 +1816,11 @@ class GameScene extends Phaser.Scene {
         hudBg.fillRect(0, 542, 800, 58);
 
         tensionOverlay = this.add.graphics().setDepth(15).setScrollFactor(0);
-        smokeGfx       = this.add.graphics().setDepth(13); // world-space, above dark overlay, below revealGfx
+        smokeGfx       = this.add.graphics().setDepth(13);
+        cameraGfx      = this.add.graphics().setDepth(12); // world-space, cameras drawn below reveal layer
+        fpGfx          = this.add.graphics().setDepth(13.5).setScrollFactor(0);
+        tabKey         = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
+        this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.TAB);
         hpBarGfx       = this.add.graphics().setDepth(16).setScrollFactor(0);
         staminaBarGfx  = this.add.graphics().setDepth(16).setScrollFactor(0);
         minimapGfx     = this.add.graphics().setDepth(16).setScrollFactor(0);
@@ -1404,10 +1838,25 @@ class GameScene extends Phaser.Scene {
             .setOrigin(0.5).setDepth(16).setScrollFactor(0).setVisible(false);
         this.add.text(9, 27, 'TM', { fontSize: '9px', fontFamily: 'monospace', color: '#2a2a1a' })
             .setDepth(17).setScrollFactor(0);
-        grenadeCountLabel = this.add.text(14, 36, '', { fontSize: '9px', fontFamily: 'monospace', color: '#888888' })
+        grenadeCountLabel  = this.add.text(14, 36, '', { fontSize: '9px', fontFamily: 'monospace', color: '#888888' })
+            .setDepth(16).setScrollFactor(0);
+        noisemakerCountLabel = this.add.text(14, 46, '', { fontSize: '9px', fontFamily: 'monospace', color: '#778866' })
             .setDepth(16).setScrollFactor(0);
         guardCountLabel = this.add.text(14, 590, '', { fontSize: '9px', fontFamily: 'monospace', color: '#666666' })
             .setDepth(16).setScrollFactor(0);
+        this.add.text(692, 590, 'TAB: 3D VIEW', { fontSize: '9px', fontFamily: 'monospace', color: '#334455' })
+            .setDepth(17).setScrollFactor(0);
+        crouchLabel = this.add.text(400, 570, 'CROUCHING', {
+            fontSize: '10px', fontFamily: 'monospace', color: '#44ff88',
+        }).setOrigin(0.5).setDepth(16).setScrollFactor(0).setAlpha(0);
+        dragHintLabel = this.add.text(400, 547, 'HOLD  E  TO  DRAG  BODY', {
+            fontSize: '10px', fontFamily: 'monospace', color: '#556655',
+        }).setOrigin(0.5).setDepth(16).setScrollFactor(0).setAlpha(0);
+        if (levelModifier) {
+            this.add.text(400, 42, `[ ${levelModifier.name} ]`, {
+                fontSize: '10px', fontFamily: 'monospace', color: '#884400',
+            }).setOrigin(0.5).setDepth(16).setScrollFactor(0);
+        }
 
         // Camera follows player, bounded to the world
         this.cameras.main.startFollow(player, true);
@@ -1426,9 +1875,34 @@ class GameScene extends Phaser.Scene {
             }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
         }
 
-        this.add.text(400, 592, 'SHIFT  sprint  ·  E  smoke  ·  SPACE  attack / backstab', {
+        this.add.text(400, 592, 'SHIFT  sprint  ·  E  smoke  ·  Q  noise  ·  SPACE  attack / backstab', {
             fontSize: '10px', fontFamily: 'monospace', color: '#333333',
         }).setOrigin(0.5).setDepth(12).setScrollFactor(0);
+
+        // Floor start flash (brief camera fade-in for dramatic effect)
+        this.cameras.main.fadeIn(600, 0, 0, 0);
+
+        // Floor 1 intro — player is locked in a cell
+        if (currentLevel === 1) {
+            this.physics.world.pause();
+            const introBg = this.add.graphics().setDepth(25).setScrollFactor(0);
+            introBg.fillStyle(0x000000, 0.9);
+            introBg.fillRect(0, 0, 800, 600);
+            const introTxt = this.add.text(400, 270, 'YOU ARE LOCKED DEEP\nINSIDE A PRISON.', {
+                fontSize: '18px', fontFamily: 'monospace', color: '#cc3333',
+                align: 'center', lineSpacing: 8,
+            }).setOrigin(0.5).setDepth(26).setScrollFactor(0);
+            const introSub = this.add.text(400, 340, 'FIND THE KEYCARD.  FIND THE EXIT.\nDO NOT GET CAUGHT.', {
+                fontSize: '11px', fontFamily: 'monospace', color: '#444444',
+                align: 'center', lineSpacing: 5,
+            }).setOrigin(0.5).setDepth(26).setScrollFactor(0);
+            this.time.delayedCall(2600, () => {
+                this.tweens.add({
+                    targets: [introBg, introTxt, introSub], alpha: 0, duration: 500,
+                    onComplete: () => { introBg.destroy(); introTxt.destroy(); introSub.destroy(); this.physics.world.resume(); },
+                });
+            });
+        }
 
         // Tier transition card on floors 6, 11, 16
         const tierNames = { 6: 'SECURITY WING', 11: 'THE LAB', 16: 'THE CORE' };
@@ -1449,6 +1923,25 @@ class GameScene extends Phaser.Scene {
                 });
             });
         }
+
+        // Modifier flash card (skipped on floors that already show a tier card)
+        if (levelModifier && !tierNames[currentLevel] && currentLevel !== 1) {
+            this.physics.world.pause();
+            const mBg = this.add.graphics().setDepth(27).setScrollFactor(0);
+            mBg.fillStyle(0x000000, 0.9);
+            mBg.fillRect(0, 0, 800, 600);
+            const mTitle = this.add.text(400, 256, levelModifier.name, {
+                fontSize: '38px', fontFamily: 'monospace', color: '#ff8800',
+            }).setOrigin(0.5).setDepth(28).setScrollFactor(0);
+            const mDesc = this.add.text(400, 318, levelModifier.desc, {
+                fontSize: '13px', fontFamily: 'monospace', color: '#554422',
+            }).setOrigin(0.5).setDepth(28).setScrollFactor(0);
+            this.time.delayedCall(1700, () => {
+                this.tweens.add({ targets: [mBg, mTitle, mDesc], alpha: 0, duration: 400,
+                    onComplete: () => { mBg.destroy(); mTitle.destroy(); mDesc.destroy(); this.physics.world.resume(); }
+                });
+            });
+        }
     }
 
     update(time, delta) {
@@ -1462,6 +1955,7 @@ class GameScene extends Phaser.Scene {
         const keyMoving = wasd.left.isDown || wasd.right.isDown || wasd.up.isDown || wasd.down.isDown;
         const dt = (delta || 16) / 1000;
         const sprinting = shiftHeld && keyMoving && !staminaExhausted;
+        crouching = !!(crouchKey && crouchKey.isDown && !sprinting);
         const walking   = !shiftHeld; // walking = not holding shift
         if (sprinting) {
             stamina = Math.max(0, stamina - 38 * dt);
@@ -1471,9 +1965,10 @@ class GameScene extends Phaser.Scene {
             if (staminaExhausted && stamina >= 25) staminaExhausted = false;
         }
 
-        const curSpeed = sprinting ? SPEED : walkSpd;
-        const curLight = sprinting ? LIGHT_RADIUS : baseWalkLight;
-        const curSound = sprinting ? SOUND_RADIUS  : walkSnd;
+        const lightMult = levelModifier?.id === 'BLACKOUT' ? 0.52 : 1;
+        const curSpeed = sprinting ? SPEED : crouching ? Math.round(walkSpd * 0.5) : walkSpd;
+        const curLight = (sprinting ? LIGHT_RADIUS : crouching ? Math.round(baseWalkLight * 0.75) : baseWalkLight) * lightMult;
+        const curSound = sprinting ? SOUND_RADIUS  : crouching ? Math.round(walkSnd * 0.28) : walkSnd;
         let dirX = 0, dirY = 0;
         if (wasd.left.isDown)  { player.setVelocityX(-curSpeed); dirX -= 1; }
         if (wasd.right.isDown) { player.setVelocityX( curSpeed); dirX += 1; }
@@ -1488,6 +1983,26 @@ class GameScene extends Phaser.Scene {
         const glowTarget = isMoving ? curLight : 0;
         const now        = this.time.now;
         currentGlowRadius += (glowTarget - currentGlowRadius) * 0.14;
+
+        // Sprint footprints
+        if (sprinting && isMoving && Date.now() - lastFootprint > 290) {
+            lastFootprint = Date.now();
+            footprints.push({ x: player.x, y: player.y, ang: Math.atan2(lastMoveY, lastMoveX), born: Date.now() });
+        }
+        footprints = footprints.filter(fp => Date.now() - fp.born < 3500);
+
+        // Sprint dust trail particles
+        if (sprinting && isMoving && Math.random() < 0.38) {
+            worldParticles.push({
+                x: player.x + (Math.random() - 0.5) * 8,
+                y: player.y + 9,
+                vx: (Math.random() - 0.5) * 0.6,
+                vy: 0.3 + Math.random() * 0.55,
+                color: 0x2a2a2a,
+                born: Date.now(),
+                life: 280 + Math.random() * 200,
+            });
+        }
 
         // Attack (SPACE) — hits guards in front within weapon range
         if (Phaser.Input.Keyboard.JustDown(spaceKey) && now >= attackCooldown) {
@@ -1521,6 +2036,7 @@ class GameScene extends Phaser.Scene {
                     g.koUntil    = now + koDur;
                     g.koDuration = koDur;
                     g.state      = 'KO';
+                    g.discovered = false;
                     g.setVelocity(0);
                     if (activePerks.includes('PHANTOM')) g.phantomUntil = now + 2000;
                     const timeSince = now - lastKOTime;
@@ -1529,8 +2045,14 @@ class GameScene extends Phaser.Scene {
                     const baseScore = g.boss ? 600 : g.elite ? 400 : 200;
                     const backstabBonus = isBackstab ? 1.5 : 1;
                     const mult = 1 + (comboCount - 1) * 0.5;
-                    score += Math.round(baseScore * mult * backstabBonus);
+                    const scoreGain = Math.round(baseScore * mult * backstabBonus);
+                    score += scoreGain;
                     guardKOs++;
+                    const sgColor = isBackstab ? '#66ccff' : comboCount > 1 ? '#ffee44' : '#aaffaa';
+                    const sgTxt = this.add.text(g.x - 18, g.y - 14, `+${scoreGain}`, {
+                        fontSize: '13px', fontFamily: 'monospace', color: sgColor,
+                    }).setDepth(20).setOrigin(0.5);
+                    this.tweens.add({ targets: sgTxt, y: g.y - 56, alpha: 0, duration: 900, ease: 'Cubic.Out', onComplete: () => sgTxt.destroy() });
                     if (isBackstab) {
                         playSilentKO();
                         spawnParticles(g.x, g.y, 0x44aaff, 6);
@@ -1578,11 +2100,68 @@ class GameScene extends Phaser.Scene {
             playSmokeGrenade();
         }
         activeGrenades = activeGrenades.filter(ag => ag.expiresAt > now);
+        if (dragHintLabel) dragHintLabel.setAlpha(dragTarget ? 0.8 : 0);
+
+        // Noise-maker throw (Q) — rock pebble that distracts nearby guards
+        if (Phaser.Input.Keyboard.JustDown(noiseKey) && playerNoisemakers > 0 && !transitioning) {
+            playerNoisemakers--;
+            const throwDist = 230;
+            const tx = player.x + lastMoveX * throwDist;
+            const ty = player.y + lastMoveY * throwDist;
+            activeNoisemakers.push({
+                fromX: player.x, fromY: player.y, x: player.x, y: player.y,
+                targetX: tx, targetY: ty, thrownAt: now, landAt: now + 320, triggered: false,
+            });
+            playTone(580, 0.06, 'sine', 0.05);
+        }
+        activeNoisemakers.forEach(nm => {
+            if (!nm.triggered) {
+                const t = Math.min(1, (now - nm.thrownAt) / (nm.landAt - nm.thrownAt));
+                nm.x = nm.fromX + (nm.targetX - nm.fromX) * t;
+                nm.y = nm.fromY + (nm.targetY - nm.fromY) * t;
+                if (now >= nm.landAt) {
+                    nm.triggered = true;
+                    playTone(160, 0.14, 'triangle', 0.14);
+                    koRings.push({ x: nm.targetX, y: nm.targetY, startAt: now, color: 0xffaa44 });
+                    guards.getChildren().forEach(g => {
+                        if (g.koUntil > now) return;
+                        if (Phaser.Math.Distance.Between(nm.targetX, nm.targetY, g.x, g.y) < 400) {
+                            g.state = 'ALERT'; g.heardX = nm.targetX; g.heardY = nm.targetY; g.wallSlip = null;
+                        }
+                    });
+                }
+            }
+        });
+        activeNoisemakers = activeNoisemakers.filter(nm => !nm.triggered || now < nm.landAt + 1800);
+
+        // Tripwire collision
+        if (!transitioning && !playerDead) {
+            const camDisabled = switchTriggered && Date.now() < switchUntil;
+            tripwires.forEach(tw => {
+                if (tw.triggered || camDisabled) return;
+                if (Math.abs(player.x - tw.x) < 10 && player.y > tw.y1 + 2 && player.y < tw.y2 - 2) {
+                    tw.triggered = true;
+                    anyAlerted = true;
+                    if (!alarmFired && !alarmTime) alarmTime = now + 800;
+                    this.cameras.main.shake(300, 0.025);
+                    this.cameras.main.flash(220, 255, 60, 0, false);
+                    playAlertSiren();
+                    guards.getChildren().forEach(g => {
+                        if (g.koUntil > now) return;
+                        g.state = 'ALERT'; g.heardX = tw.x; g.heardY = (tw.y1 + tw.y2) / 2; g.wallSlip = null;
+                    });
+                    const twTxt = this.add.text(tw.x, (tw.y1 + tw.y2) / 2 - 20, '⚡ TRIPWIRE', {
+                        fontSize: '13px', fontFamily: 'monospace', color: '#ff4400',
+                    }).setDepth(22).setOrigin(0.5);
+                    this.tweens.add({ targets: twTxt, y: tw.y1 - 30, alpha: 0, duration: 900, onComplete: () => twTxt.destroy() });
+                }
+            });
+        }
 
         // Guard AI
         guards.getChildren().forEach(g => {
             if (g.koUntil > now) { g.setVelocity(0); return; }
-            if (g.state === 'KO') { g.state = 'PATROL'; g.koUntil = 0; g.setVelocityX(patrolSpd(currentLevel)); }
+            if (g.state === 'KO') { g.state = 'PATROL'; g.koUntil = 0; g.discovered = false; g.setVelocityX(patrolSpd(currentLevel)); }
 
             if (g.body.velocity.x !== 0 || g.body.velocity.y !== 0)
                 g.faceAngle = Math.atan2(g.body.velocity.y, g.body.velocity.x);
@@ -1591,7 +2170,8 @@ class GameScene extends Phaser.Scene {
             const phantomSilent = activePerks.includes('PHANTOM') && g.phantomUntil && now < g.phantomUntil;
             // Smoke check — player inside any active smoke cloud blocks sight AND hearing
             const inSmoke = activeGrenades.some(ag =>
-                Phaser.Math.Distance.Between(ag.x, ag.y, player.x, player.y) <= ag.radius
+                Phaser.Math.Distance.Between(ag.x, ag.y, player.x, player.y) <= ag.radius ||
+                Phaser.Math.Distance.Between(ag.x, ag.y, g.x, g.y) <= ag.radius
             );
             const heard = !phantomSilent && !inSmoke && isMoving && dp <= curSound;
 
@@ -1606,7 +2186,7 @@ class GameScene extends Phaser.Scene {
             const toPlAng  = Math.atan2(player.y - g.y, player.x - g.x);
             const angDiff  = Math.abs(Phaser.Math.Angle.Wrap(toPlAng - (g.faceAngle || 0)));
             const phantomActive = activePerks.includes('PHANTOM') && g.phantomUntil && now < g.phantomUntil;
-            const seen     = !transitioning && !phantomActive && !inSmoke && dp < fovRange && angDiff < fovHalf;
+            const seen     = !transitioning && !phantomActive && !inSmoke && dp < (crouching ? fovRange * 0.45 : fovRange) && angDiff < fovHalf;
 
             if (g.state === 'PATROL') {
                 const basePs = patrolSpd(currentLevel);
@@ -1626,7 +2206,7 @@ class GameScene extends Phaser.Scene {
                     if (g.body.blocked.down)  { g.setVelocityY(-ps); g.setVelocityX(0); }
                 }
                 if (heard || seen) {
-                    g.suspicion = Math.min(1, (g.suspicion || 0) + dt * 1.5);
+                    g.suspicion = Math.min(1, (g.suspicion || 0) + dt * (g.boss ? 3.2 : 1.5));
                     // Play rising detection tone
                     if (g.suspicion > 0.05 && Date.now() - lastDetectionTone > 90) {
                         lastDetectionTone = Date.now();
@@ -1638,15 +2218,20 @@ class GameScene extends Phaser.Scene {
                 if (g.suspicion >= 1) {
                     g.suspicion = 0;
                     playAlertSiren(); anyAlerted = true;
+                    this.cameras.main.shake(200, 0.022);
+                    this.cameras.main.flash(160, 200, 0, 0, false);
                     const excl = this.add.text(g.x, g.y - 30, '!', {
                         fontSize: '26px', fontFamily: 'monospace', color: '#ff3333',
                     }).setDepth(22).setOrigin(0.5);
                     this.tweens.add({ targets: excl, y: g.y - 60, alpha: 0, duration: 650, ease: 'Cubic.Out', onComplete: () => excl.destroy() });
                     g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null; g.alertFlash = now + 900;
+                    radioWaves.push({ x: g.x, y: g.y, startAt: now });
                     guards.getChildren().forEach(o => {
                         if (o === g || o.state !== 'PATROL' || o.koUntil > now) return;
-                        if (Phaser.Math.Distance.Between(g.x, g.y, o.x, o.y) < 280) {
+                        // Boss warden call: alerts every guard on the floor instantly
+                        if (g.boss || Phaser.Math.Distance.Between(g.x, g.y, o.x, o.y) < 280) {
                             o.state = 'ALERT'; o.heardX = player.x; o.heardY = player.y; o.wallSlip = null;
+                            radioWaves.push({ x: g.x, y: g.y, startAt: now + 80 });
                         }
                     });
                     if (g.boss && !alarmFired && !alarmTime) alarmTime = now + 200;
@@ -1655,18 +2240,26 @@ class GameScene extends Phaser.Scene {
 
                 // Body discovery — patrolling guard stumbles on a KO'd body
                 guards.getChildren().forEach(other => {
-                    if (other === g || other.koUntil <= now) return;
-                    if (Phaser.Math.Distance.Between(g.x, g.y, other.x, other.y) < 38) {
+                    if (other === g || other.koUntil <= now || other.discovered) return;
+                    if (Phaser.Math.Distance.Between(g.x, g.y, other.x, other.y) < 42) {
+                        other.discovered = true;
                         if (!alarmFired && !alarmTime) { alarmTime = now + 2000; anyAlerted = true; }
                         g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y;
                         g.wallSlip = null; g.alertFlash = now + 900;
+                        radioWaves.push({ x: g.x, y: g.y, startAt: now });
+                        playAlertSiren();
+                        this.cameras.main.flash(120, 255, 80, 0, false);
+                        const bfTxt = this.add.text(g.x, g.y - 28, '!! BODY', {
+                            fontSize: '12px', fontFamily: 'monospace', color: '#ff6600',
+                        }).setDepth(22).setOrigin(0.5);
+                        this.tweens.add({ targets: bfTxt, y: g.y - 64, alpha: 0, duration: 800, onComplete: () => bfTxt.destroy() });
                     }
                 });
             } else if (g.state === 'ALERT') {
                 if (heard || seen) { g.heardX = player.x; g.heardY = player.y; }
                 const distToTarget = Phaser.Math.Distance.Between(g.x, g.y, g.heardX, g.heardY);
                 if (distToTarget < 12) {
-                    g.setVelocity(0); g.state = 'WAIT'; g.waitUntil = now + 2000;
+                    g.setVelocity(0); g.state = 'WAIT'; g.waitUntil = now + (g.boss ? 5000 : 2000);
                 } else {
                     const ang = Phaser.Math.Angle.Between(g.x, g.y, g.heardX, g.heardY);
                     const as  = g.guardType === 'RUNNER' ? Math.round(alertSpd(currentLevel) * 1.8) : alertSpd(currentLevel);
@@ -1686,6 +2279,40 @@ class GameScene extends Phaser.Scene {
                 } else if (now >= g.waitUntil) {
                     g.state = 'PATROL'; g.setVelocityX(patrolSpd(currentLevel));
                 }
+            }
+        });
+
+        // Security cameras — rotate and detect player
+        const playerInSmoke = activeGrenades.some(ag =>
+            Phaser.Math.Distance.Between(ag.x, ag.y, player.x, player.y) <= ag.radius
+        );
+        securityCameras.forEach(cam => {
+            const camDisabled = switchTriggered && Date.now() < switchUntil;
+            if (!camDisabled) {
+                cam.faceAngle = cam.baseAngle + Math.sin(now * 0.001 * cam.rotateSpeed + cam.rotatePhase) * (Math.PI / 3);
+                const dcam = Phaser.Math.Distance.Between(player.x, player.y, cam.x, cam.y);
+                const toPlAng2 = Math.atan2(player.y - cam.y, player.x - cam.x);
+                const angDiff2 = Math.abs(Phaser.Math.Angle.Wrap(toPlAng2 - cam.faceAngle));
+                const camSeen = !transitioning && !playerInSmoke && dcam < cam.fovRange && angDiff2 < cam.fovHalf;
+                if (camSeen) {
+                    cam.suspicion = Math.min(1, (cam.suspicion || 0) + dt * 2.2);
+                    if (cam.suspicion >= 1 && !anyAlerted) {
+                        cam.suspicion = 0;
+                        anyAlerted = true;
+                        playAlertSiren();
+                        this.cameras.main.shake(200, 0.022);
+                        this.cameras.main.flash(160, 200, 0, 0, false);
+                        radioWaves.push({ x: cam.x, y: cam.y, startAt: now });
+                        guards.getChildren().forEach(g => {
+                            if (g.koUntil > now) return;
+                            g.state = 'ALERT'; g.heardX = player.x; g.heardY = player.y; g.wallSlip = null;
+                        });
+                    }
+                } else {
+                    cam.suspicion = Math.max(0, (cam.suspicion || 0) - dt * 0.9);
+                }
+            } else {
+                cam.suspicion = 0;
             }
         });
 
@@ -1718,6 +2345,10 @@ class GameScene extends Phaser.Scene {
         }
 
         const theme = getLevelTheme(currentLevel);
+
+        if (Phaser.Input.Keyboard.JustDown(tabKey) && !transitioning && !playerDead) fpMode = !fpMode;
+        if (fpMode) { fpGfx.clear(); renderFP(fpGfx, now, theme); }
+        else fpGfx.clear();
 
         darkOverlay.clear();
         darkOverlay.fillStyle(0x000000, 1);
@@ -1772,10 +2403,34 @@ class GameScene extends Phaser.Scene {
                                 revealGfx.lineBetween(tx - TILE / 2, ty, tx + TILE / 2, ty);
                                 const bOff = (tr % 2) * (TILE / 2);
                                 revealGfx.lineBetween(tx - TILE / 2 + bOff, ty - TILE / 2, tx - TILE / 2 + bOff, ty + TILE / 2);
-                                // Prison bar verticals — every 16px across the wall
-                                revealGfx.lineStyle(2, 0x000000, 0.28);
-                                for (let bx = tx - TILE / 2 + 16; bx < tx + TILE / 2; bx += 16)
+                                // Cell-block zone: dense bars (12px apart); scatter zone: wider bars (18px)
+                                const inCellZone = tr < levelLayout.corrTop;
+                                const barStep = inCellZone ? 12 : 18;
+                                const barAlpha = inCellZone ? 0.35 : 0.22;
+                                revealGfx.lineStyle(2, 0x000000, barAlpha);
+                                for (let bx = tx - TILE / 2 + barStep; bx < tx + TILE / 2; bx += barStep)
                                     revealGfx.lineBetween(bx, ty - TILE / 2, bx, ty + TILE / 2);
+                                // Stone cracks — seeded deterministically per tile
+                                const crSeed = (tr * 7919 + tc * 1013) & 0xffff;
+                                if (crSeed % 3 > 0) {
+                                    const half = TILE / 2 - 3;
+                                    const crX0 = tx - half + (crSeed % (TILE - 6));
+                                    const crY0 = ty - half + ((crSeed >> 5) % (TILE - 6));
+                                    const crAng = ((crSeed >> 9) & 7) * (Math.PI / 8);
+                                    const crLen = 8 + ((crSeed >> 4) & 15);
+                                    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+                                    const crX1 = clamp(crX0 + Math.cos(crAng) * crLen, tx - half, tx + half);
+                                    const crY1 = clamp(crY0 + Math.sin(crAng) * crLen, ty - half, ty + half);
+                                    revealGfx.lineStyle(1, 0x000000, 0.42);
+                                    revealGfx.lineBetween(crX0, crY0, crX1, crY1);
+                                    if ((crSeed & 3) !== 0) {
+                                        const brAng = crAng + 0.8 + ((crSeed >> 12) & 3) * 0.25;
+                                        const brLen = 4 + ((crSeed >> 8) & 9);
+                                        const brX1 = clamp(crX1 + Math.cos(brAng) * brLen, tx - half, tx + half);
+                                        const brY1 = clamp(crY1 + Math.sin(brAng) * brLen, ty - half, ty + half);
+                                        revealGfx.lineBetween(crX1, crY1, brX1, brY1);
+                                    }
+                                }
                             } else {
                                 // Dim silhouette
                                 const fade = Math.max(0, 1 - (dist - r - TILE) / (ambR - r)) * 0.22;
@@ -1867,6 +2522,57 @@ class GameScene extends Phaser.Scene {
                     revealGfx.fillCircle(gc.x, gc.y - 18, 4);
                 }
             });
+            // Noise-maker pickups — small grey rock with gold glint
+            noisemakerGrp.getChildren().forEach(nm => {
+                if (!nm.active) return;
+                if (Phaser.Math.Distance.Between(player.x, player.y, nm.x, nm.y) < r + TILE) {
+                    const sp = 0.7 + 0.3 * Math.sin(now * 0.007);
+                    revealGfx.fillStyle(0x777777, sp);
+                    revealGfx.fillCircle(nm.x, nm.y, 6);
+                    revealGfx.fillStyle(0xaaaaaa, sp * 0.65);
+                    revealGfx.fillCircle(nm.x - 2, nm.y - 2, 3);
+                    revealGfx.fillStyle(0xffcc44, sp * 0.7);
+                    revealGfx.fillCircle(nm.x + 2, nm.y - 4, 2);
+                }
+            });
+            // Active noisemakers in flight / landed
+            activeNoisemakers.forEach(nm => {
+                if (Phaser.Math.Distance.Between(player.x, player.y, nm.x, nm.y) > r + TILE * 2) return;
+                if (!nm.triggered) {
+                    revealGfx.fillStyle(0xffaa44, 0.9);
+                    revealGfx.fillCircle(nm.x, nm.y, 4);
+                } else {
+                    const age = now - nm.landAt;
+                    const fa = Math.max(0, 1 - age / 1800);
+                    revealGfx.fillStyle(0xff8800, fa * 0.6);
+                    revealGfx.fillCircle(nm.targetX, nm.targetY, 5 + (1 - fa) * 4);
+                }
+            });
+
+            // Security cameras — draw on wall tiles, show FOV cone and suspicion bar
+            securityCameras.forEach(cam => {
+                const dcam = Phaser.Math.Distance.Between(player.x, player.y, cam.x, cam.y);
+                if (dcam > r + TILE * 2) return;
+                const camDisabled = switchTriggered && Date.now() < switchUntil;
+                const camCol = camDisabled ? 0x333333 : cam.suspicion > 0.5 ? 0xff4400 : 0x446688;
+                const coneAlpha = camDisabled ? 0 : 0.10 + cam.suspicion * 0.22;
+                revealGfx.fillStyle(camCol, coneAlpha);
+                revealGfx.slice(cam.x, cam.y, cam.fovRange, cam.faceAngle - cam.fovHalf, cam.faceAngle + cam.fovHalf, false);
+                revealGfx.fillPath();
+                // Camera body (small box on wall)
+                revealGfx.fillStyle(camDisabled ? 0x222222 : 0x334455, 0.9);
+                revealGfx.fillRect(cam.x - 7, cam.y - 5, 14, 10);
+                revealGfx.fillStyle(camDisabled ? 0x111111 : camCol, 0.95);
+                revealGfx.fillCircle(cam.x, cam.y, 3);
+                // Suspicion bar
+                if (cam.suspicion > 0.05 && !camDisabled) {
+                    revealGfx.fillStyle(0x111111, 0.85);
+                    revealGfx.fillRect(cam.x - 12, cam.y - 10, 24, 4);
+                    revealGfx.fillStyle(cam.suspicion > 0.7 ? 0xff3300 : 0xffaa00, 0.95);
+                    revealGfx.fillRect(cam.x - 12, cam.y - 10, Math.round(24 * cam.suspicion), 4);
+                }
+            });
+
             // Light switch — amber wall panel with pulse
             if (!switchTriggered) {
                 switchGrp.getChildren().forEach(sw => {
@@ -1920,6 +2626,52 @@ class GameScene extends Phaser.Scene {
                 }
             });
 
+            // Sprint footprints — fading lateral marks
+            const fpNow = Date.now();
+            footprints.forEach(fp => {
+                const age = fpNow - fp.born;
+                if (Phaser.Math.Distance.Between(player.x, player.y, fp.x, fp.y) > ambR + TILE) return;
+                const alpha = Math.max(0, (1 - age / 3500) * 0.2);
+                const perp = (fp.ang || 0) + Math.PI / 2;
+                revealGfx.lineStyle(1, 0x334455, alpha);
+                revealGfx.lineBetween(fp.x + Math.cos(perp) * 4, fp.y + Math.sin(perp) * 4,
+                                       fp.x - Math.cos(perp) * 4, fp.y - Math.sin(perp) * 4);
+            });
+
+            // Laser tripwires — pulsing vertical beams
+            tripwires.forEach(tw => {
+                if (tw.triggered) return;
+                const midY = (tw.y1 + tw.y2) / 2;
+                if (Phaser.Math.Distance.Between(player.x, player.y, tw.x, midY) > r + TILE * 2) return;
+                const camDisabled = switchTriggered && Date.now() < switchUntil;
+                if (camDisabled) {
+                    revealGfx.lineStyle(1, 0x333333, 0.2);
+                    revealGfx.lineBetween(tw.x, tw.y1, tw.x, tw.y2);
+                } else {
+                    const pulse = 0.55 + 0.45 * Math.sin(now * 0.007);
+                    revealGfx.lineStyle(2, 0xff2200, 0.5 + pulse * 0.4);
+                    revealGfx.lineBetween(tw.x, tw.y1, tw.x, tw.y2);
+                    // Emitter brackets at each end
+                    revealGfx.fillStyle(0xff4400, 0.88);
+                    revealGfx.fillRect(tw.x - 5, tw.y1 - 5, 10, 10);
+                    revealGfx.fillRect(tw.x - 5, tw.y2 - 5, 10, 10);
+                    // Glow along beam
+                    revealGfx.fillStyle(0xff6600, pulse * 0.18);
+                    revealGfx.fillRect(tw.x - 3, tw.y1, 6, tw.y2 - tw.y1);
+                }
+            });
+
+            // Radio wave rings (guard alert contagion)
+            radioWaves = radioWaves.filter(rw => now - rw.startAt < 1000);
+            radioWaves.forEach(rw => {
+                if (Phaser.Math.Distance.Between(player.x, player.y, rw.x, rw.y) > r + 160) return;
+                const prog = Math.max(0, (now - rw.startAt) / 1000);
+                revealGfx.lineStyle(2, 0xff4400, (1 - prog) * 0.55);
+                revealGfx.strokeCircle(rw.x, rw.y, prog * 95);
+                revealGfx.lineStyle(1, 0xff6600, (1 - prog) * 0.28);
+                revealGfx.strokeCircle(rw.x, rw.y, prog * 55);
+            });
+
             // Prison props — rendered within ambient reveal radius so always visible in dim zone
             prisonProps.forEach(prop => {
                 if (Phaser.Math.Distance.Between(player.x, player.y, prop.x, prop.y) > ambR + TILE) return;
@@ -1962,9 +2714,22 @@ class GameScene extends Phaser.Scene {
                             g.guardType === 'WATCHER' ? Math.PI * 7 / 12 : g.guardType === 'RUNNER' ? Math.PI / 7 : Math.PI / 4;
                         const coneCol = g.boss ? 0xff6600 : g.elite ? 0xffaa00 :
                             g.guardType === 'WATCHER' ? 0xcc44ff : g.guardType === 'RUNNER' ? 0x00ccff : 0xff3333;
-                        revealGfx.fillStyle(coneCol, g.state === 'ALERT' ? 0.28 : 0.12);
+                        const coneAlpha = g.state === 'ALERT' ? 0.28 : 0.12 + (g.suspicion || 0) * 0.20;
+                        revealGfx.fillStyle(coneCol, coneAlpha);
                         revealGfx.slice(g.x, g.y, fovR, fa - fovA, fa + fovA, false);
                         revealGfx.fillPath();
+                        // Backstab arc — green sector at guard's rear, visible when in weapon range
+                        if (!g.boss) {
+                            const dpR = Phaser.Math.Distance.Between(player.x, player.y, g.x, g.y);
+                            const wpR = getWeapon(currentLevel);
+                            const atkRangeR = activePerks.includes('WIDE_SWING') ? Math.round(wpR.range * 1.20) : wpR.range;
+                            if (dpR < atkRangeR + 55) {
+                                const backAng = fa + Math.PI;
+                                revealGfx.lineStyle(1.5, 0x44ff88, 0.38);
+                                revealGfx.slice(g.x, g.y, 30, backAng - 0.44 * Math.PI, backAng + 0.44 * Math.PI, false);
+                                revealGfx.strokePath();
+                            }
+                        }
                         if (g.boss) drawBossSprite(revealGfx, g.x, g.y, g.state === 'ALERT');
                         else drawGuardSprite(revealGfx, g.x, g.y, g.guardType || 'STANDARD', g.elite || false, g.state === 'ALERT');
                         // Suspicion detection meter
@@ -2044,6 +2809,12 @@ class GameScene extends Phaser.Scene {
         } else {
             const idleBob = isMoving ? 0 : Math.sin(now * 0.0028) * 1.5;
             drawPlayerSprite(revealGfx, player.x, player.y + idleBob);
+        }
+        // Crouch ring — shows reduced detection footprint
+        if (crouching) {
+            const crPulse = 0.25 + 0.15 * Math.sin(now * 0.005);
+            revealGfx.lineStyle(1, 0x44ff88, crPulse);
+            revealGfx.strokeCircle(player.x, player.y, 20);
         }
         if (isMoving && !anyAlerted) {
             const pulse = 0.12 + 0.06 * Math.sin(now * 0.008);
@@ -2145,6 +2916,8 @@ class GameScene extends Phaser.Scene {
                 (playerGrenades > 0 ? `    SMK ×${playerGrenades}` : '')
             )
             .setColor(keycardCollected ? '#44cc77' : '#555555');
+        if (noisemakerCountLabel) noisemakerCountLabel.setText(playerNoisemakers > 0 ? `ROCK ×${playerNoisemakers}` : '');
+        if (crouchLabel) crouchLabel.setAlpha(crouching ? 0.75 : 0);
         if (alarmTime) {
             alarmLabel.setText(`! ALARM IN ${Math.ceil((alarmTime - now) / 1000)}s`).setVisible(true);
         } else {
@@ -2174,6 +2947,22 @@ class GameScene extends Phaser.Scene {
             const mTheme = getLevelTheme(currentLevel);
             minimapGfx.fillStyle(keycardCollected ? mTheme.exit : 0x445544, 0.9);
             minimapGfx.fillRect(mX + exC * tW, mY + exR * tH, Math.max(tW, 2), Math.max(tH, 2));
+            // Keycard (yellow dot until collected)
+            if (!keycardCollected) {
+                keycardGrp.getChildren().forEach(kc => {
+                    if (!kc.active) return;
+                    const kcC = Math.floor(kc.x / TILE), kcR = Math.floor(kc.y / TILE);
+                    minimapGfx.fillStyle(0xffcc00, 1);
+                    minimapGfx.fillRect(mX + kcC * tW, mY + kcR * tH, Math.max(tW, 2), Math.max(tH, 2));
+                });
+            }
+            // Active noisemakers (orange dot when triggered)
+            activeNoisemakers.forEach(nm => {
+                if (!nm.triggered) return;
+                const nC = Math.floor(nm.targetX / TILE), nR = Math.floor(nm.targetY / TILE);
+                minimapGfx.fillStyle(0xff8800, 0.85);
+                minimapGfx.fillRect(mX + nC * tW, mY + nR * tH, Math.max(tW, 2), Math.max(tH, 2));
+            });
             // Guards
             guards.getChildren().forEach(g => {
                 if (g.koUntil > now) return;

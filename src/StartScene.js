@@ -6,12 +6,12 @@ export default class StartScene extends Phaser.Scene {
 
         // === STONE WALL BACKGROUND ===
         const bg = this.add.graphics();
-        bg.fillStyle(0x0d0d0d, 1);
+        bg.fillStyle(0x1c1c1c, 1);
         bg.fillRect(0, 0, W, H);
 
         // Stone blocks — staggered rows
         const bW = 88, bH = 38;
-        const stoneShades = [0x161616, 0x141414, 0x191919, 0x131313, 0x171717];
+        const stoneShades = [0x2a2a2a, 0x272727, 0x2e2e2e, 0x252525, 0x2c2c2c];
         for (let r = 0; r * bH < H + bH; r++) {
             const off = (r % 2) * Math.round(bW / 2);
             for (let c = -1; c * bW < W + bW; c++) {
@@ -23,7 +23,7 @@ export default class StartScene extends Phaser.Scene {
 
         // Mortar lines
         const mortar = this.add.graphics();
-        mortar.lineStyle(1, 0x080808, 1);
+        mortar.lineStyle(1, 0x131313, 1);
         for (let r = 1; r * bH < H; r++) mortar.lineBetween(0, r * bH, W, r * bH);
         for (let r = 0; r * bH < H; r++) {
             const off = (r % 2) * Math.round(bW / 2);
@@ -32,47 +32,48 @@ export default class StartScene extends Phaser.Scene {
 
         // Stone cracks
         const cracks = this.add.graphics();
-        cracks.lineStyle(1, 0x090909, 1);
-        [[118, 78], [670, 220], [210, 390], [590, 330], [420, 520]].forEach(([cx2, cy2]) => {
+        cracks.lineStyle(1, 0x161616, 1);
+        [[118, 78], [670, 220], [210, 390], [590, 330], [420, 520], [300, 180], [550, 490]].forEach(([cx2, cy2]) => {
             cracks.lineBetween(cx2, cy2, cx2 + 14, cy2 + 22);
             cracks.lineBetween(cx2 + 14, cy2 + 22, cx2 + 7, cy2 + 36);
             cracks.lineBetween(cx2, cy2, cx2 - 9, cy2 + 14);
+            cracks.lineBetween(cx2 + 14, cy2 + 22, cx2 + 22, cy2 + 30);
         });
 
         // Moisture drip streaks
         const drips = this.add.graphics();
         [[88, 0, 95], [340, 0, 75], [715, 0, 85]].forEach(([dx, , dlen]) => {
-            drips.lineStyle(1, 0x0e160e, 0.55);
+            drips.lineStyle(1, 0x1c281c, 0.55);
             drips.lineBetween(dx, 0, dx + 1, dlen);
             drips.lineBetween(dx, 0, dx - 1, dlen * 0.6);
-            drips.fillStyle(0x0e160e, 0.4);
+            drips.fillStyle(0x1c281c, 0.4);
             drips.fillCircle(dx + 1, dlen, 2);
         });
 
         // === CONCRETE FLOOR STRIP ===
         const floor = this.add.graphics();
-        floor.fillStyle(0x111111, 1);
+        floor.fillStyle(0x181818, 1);
         floor.fillRect(0, H - 40, W, 40);
-        floor.lineStyle(1, 0x1a1a1a, 1);
+        floor.lineStyle(1, 0x222222, 1);
         for (let fx = 0; fx < W; fx += 60) floor.lineBetween(fx, H - 40, fx, H);
         floor.lineBetween(0, H - 40, W, H - 40);
 
         // === FLUORESCENT LIGHT FIXTURE (top center) ===
         const light = this.add.graphics();
-        light.fillStyle(0x2a2a2a, 1);
+        light.fillStyle(0x303030, 1);
         light.fillRect(cx - 110, 0, 220, 10);
         light.fillStyle(0xeeeedd, 1);
         light.fillRect(cx - 105, 2, 210, 5);
-        // Light cone gradient
-        light.fillGradientStyle(0xffffcc, 0xffffcc, 0x000000, 0x000000, 0.28, 0.28, 0, 0);
-        light.fillRect(cx - 130, 10, 260, 110);
+        // Light cone gradient — noticeably brighter
+        light.fillGradientStyle(0xffffcc, 0xffffcc, 0x000000, 0x000000, 0.48, 0.48, 0, 0);
+        light.fillRect(cx - 130, 10, 260, 120);
         // Hanging chain
-        light.fillStyle(0x333333, 1);
+        light.fillStyle(0x383838, 1);
         [[cx - 80, 0, 2, 10], [cx + 78, 0, 2, 10]].forEach(([lx, ly, lw, lh]) => light.fillRect(lx, ly, lw, lh));
 
         // === PRISON BARS — left door frame ===
         const bars = this.add.graphics();
-        const barCol = 0x1c1c1c, barHi = 0x2e2e2e, rustCol = 0x3a1a08;
+        const barCol = 0x222222, barHi = 0x363636, rustCol = 0x3a1a08;
         // Left bars (cell door)
         [44, 80, 116, 152].forEach(bx => {
             bars.fillStyle(barCol, 1);
@@ -93,9 +94,9 @@ export default class StartScene extends Phaser.Scene {
         // Bar bolts
         [44, 80, 116, 152].forEach(bx => {
             [H * 0.28, H * 0.56, H * 0.82].forEach(by => {
-                bars.fillStyle(0x333333, 1);
+                bars.fillStyle(0x3a3a3a, 1);
                 bars.fillCircle(bx, by, 5);
-                bars.fillStyle(0x444444, 1);
+                bars.fillStyle(0x4a4a4a, 1);
                 bars.fillCircle(bx - 1, by - 1, 2);
             });
         });
@@ -121,7 +122,7 @@ export default class StartScene extends Phaser.Scene {
 
         const drawCobweb = (wx, wy, dirAng, size, alpha) => {
             const rays = 8, rings = 5, spread = Math.PI / 2.1;
-            webs.lineStyle(1, 0x2e2e2e, alpha);
+            webs.lineStyle(1, 0x363636, alpha);
             for (let i = 0; i < rays; i++) {
                 const a = dirAng - spread / 2 + (i / (rays - 1)) * spread;
                 webs.lineBetween(wx, wy, wx + Math.cos(a) * size, wy + Math.sin(a) * size);
@@ -137,20 +138,17 @@ export default class StartScene extends Phaser.Scene {
             }
         };
 
-        // Top-left web (from bar corner outward into room)
         drawCobweb(158, 2, Math.PI * 0.25, 68, 0.65);
-        // Top-right web
         drawCobweb(W - 120, 2, Math.PI * 0.75, 55, 0.5);
-        // Bottom-left web
         drawCobweb(158, H - 42, -Math.PI * 0.25, 48, 0.45);
 
         // Spiders
         const spiders = this.add.graphics();
         [[175, 32], [W - 135, 28]].forEach(([sx, sy]) => {
-            spiders.fillStyle(0x1e1e1e, 1);
+            spiders.fillStyle(0x252525, 1);
             spiders.fillCircle(sx, sy, 3);
             spiders.fillCircle(sx, sy - 2, 2);
-            spiders.lineStyle(1, 0x1a1a1a, 0.9);
+            spiders.lineStyle(1, 0x222222, 0.9);
             [[-5,-2],[-5,0],[-4,2],[-3,4],[3,-2],[5,0],[4,2],[3,4]].forEach(([lx, ly]) =>
                 spiders.lineBetween(sx, sy, sx + lx * 1.6, sy + ly * 1.6)
             );
@@ -158,7 +156,7 @@ export default class StartScene extends Phaser.Scene {
 
         // === TALLY MARKS — scratched into right wall ===
         const tally = this.add.graphics();
-        tally.lineStyle(1, 0x1e1e18, 0.8);
+        tally.lineStyle(1, 0x2a2a22, 0.9);
         const tx = W - 108, ty2 = H - 90;
         for (let g2 = 0; g2 < 3; g2++) {
             for (let t = 0; t < 4; t++) tally.lineBetween(tx + g2 * 26 + t * 5, ty2, tx + g2 * 26 + t * 5, ty2 + 16);
@@ -167,31 +165,30 @@ export default class StartScene extends Phaser.Scene {
         [0, 1, 2].forEach(t => tally.lineBetween(tx + 78 + t * 5, ty2, tx + 78 + t * 5, ty2 + 16));
 
         // Scratch "DAYS" label above tally
-        this.add.text(tx, ty2 - 12, 'DAYS', { fontSize: '8px', fontFamily: 'monospace', color: '#1e1e18' });
+        this.add.text(tx, ty2 - 12, 'DAYS', { fontSize: '8px', fontFamily: 'monospace', color: '#2a2a22' });
 
-        // === SCANLINES overlay (goes on top of everything else) ===
+        // === SCANLINES overlay ===
         const scan = this.add.graphics();
-        scan.lineStyle(1, 0x000000, 0.1);
+        scan.lineStyle(1, 0x000000, 0.06);
         for (let y = 0; y < H; y += 3) scan.lineBetween(0, y, W, y);
 
         // === FLICKER GROUP (all content that dims with the light) ===
         const flickerGroup = [];
 
-        // === TITLE — scratched / stencilled onto wall ===
-        // Drop shadow (carved depth)
+        // === TITLE ===
         this.add.text(cx + 2, 62, 'ECHO  THIEF', {
             fontSize: '50px', fontFamily: 'monospace', color: '#000000',
         }).setOrigin(0.5).setAlpha(0.7);
 
         const title = this.add.text(cx, 60, 'ECHO  THIEF', {
-            fontSize: '50px', fontFamily: 'monospace', color: '#cccccc',
+            fontSize: '50px', fontFamily: 'monospace', color: '#dddddd',
         }).setOrigin(0.5);
 
-        // Subtitle — location flavor
+        // Subtitle
         const LOCATIONS = ['CELLBLOCK  D', 'SOLITARY  WING', 'INTAKE  LEVEL', 'PROCESSING  UNIT'];
         const loc = LOCATIONS[Math.floor(Math.random() * LOCATIONS.length)];
         const locLabel = this.add.text(cx, 116, `${loc}  ·  20 FLOORS DOWN`, {
-            fontSize: '10px', fontFamily: 'monospace', color: '#2e2e2e',
+            fontSize: '10px', fontFamily: 'monospace', color: '#686868',
         }).setOrigin(0.5);
         flickerGroup.push(locLabel);
 
@@ -201,111 +198,117 @@ export default class StartScene extends Phaser.Scene {
             'ZERO WITNESSES', 'NO ALARM RUN', 'GHOST MODE', 'ONE SHOT',
         ];
         const flavor = this.add.text(cx, 131, `[ ${FLAVORS[Math.floor(Math.random() * FLAVORS.length)]} ]`, {
-            fontSize: '10px', fontFamily: 'monospace', color: '#222222',
+            fontSize: '10px', fontFamily: 'monospace', color: '#545454',
         }).setOrigin(0.5);
         flickerGroup.push(flavor);
 
-        // === NOTICE BOARD (worn, pinned to wall) ===
-        // Outer frame — like a corkboard / bulletin board bolted to stone
+        // === NOTICE BOARD ===
         const board = this.add.graphics();
-        board.fillStyle(0x080e08, 1);
-        board.fillRect(162, 152, W - 324, 288);
-        board.lineStyle(1, 0x1a241a, 1);
-        board.strokeRect(162, 152, W - 324, 288);
-        board.lineStyle(1, 0x0d130d, 1);
-        board.strokeRect(165, 155, W - 330, 282);
+        board.fillStyle(0x121a12, 1);
+        board.fillRect(162, 152, W - 324, 324);
+        board.lineStyle(1, 0x2e422e, 1);
+        board.strokeRect(162, 152, W - 324, 324);
+        board.lineStyle(1, 0x1e2e1e, 1);
+        board.strokeRect(165, 155, W - 330, 318);
 
-        // Corner bolts on board
-        [[162, 152], [W - 162, 152], [162, 440], [W - 162, 440]].forEach(([bx2, by2]) => {
-            board.fillStyle(0x2a2a2a, 1);
+        [[162, 152], [W - 162, 152], [162, 476], [W - 162, 476]].forEach(([bx2, by2]) => {
+            board.fillStyle(0x343434, 1);
             board.fillCircle(bx2, by2, 5);
-            board.fillStyle(0x3a3a3a, 1);
+            board.fillStyle(0x484848, 1);
             board.fillCircle(bx2 - 1, by2 - 1, 2);
         });
         flickerGroup.push(board);
 
-        // Horizontal rule — prison-style double line
-        const rule1 = this.add.graphics().lineStyle(1, 0x1a241a, 1);
+        const rule1 = this.add.graphics().lineStyle(1, 0x2e422e, 1);
         rule1.lineBetween(178, 207, W - 178, 207);
         rule1.lineBetween(178, 210, W - 178, 210);
         flickerGroup.push(rule1);
 
-        // Story
         const story = this.add.text(cx, 168, [
             'TWENTY FLOORS UNDERGROUND.  ONE WAY OUT.',
             'GUARDS PATROL EVERY LEVEL.  MAKE NO SOUND.',
         ].join('\n'), {
-            fontSize: '11px', fontFamily: 'monospace', color: '#364836',
+            fontSize: '11px', fontFamily: 'monospace', color: '#7aaa7a',
             align: 'center', lineSpacing: 5,
         }).setOrigin(0.5, 0);
         flickerGroup.push(story);
 
-        // Controls header
         const ctrlHead = this.add.text(cx, 220, '— HOW TO ESCAPE —', {
-            fontSize: '10px', fontFamily: 'monospace', color: '#2e3e2e',
+            fontSize: '10px', fontFamily: 'monospace', color: '#6a8a6a',
         }).setOrigin(0.5);
         flickerGroup.push(ctrlHead);
 
-        // Controls — monospaced aligned
         const controls = this.add.text(178, 240, [
             'WASD       walk silently  ·  no stamina drain  ·  quiet',
             'SHIFT      sprint  ·  fast but loud  ·  drains stamina',
-            'SPACE      KO guard  ·  sneak BEHIND for instant silent KO',
-            'E          smoke grenade  ·  4 sec blind cover  ·  escape tool',
+            'C          crouch  ·  half speed  ·  guards spot you 70% less far',
+            'SPACE      KO guard  ·  sneak BEHIND for silent 1-hit KO',
+            'E          smoke grenade (4 sec)  ·  hold E near body to drag it',
+            'Q          throw rock  ·  lures guards to target point',
+            'TAB        toggle first-person 3D view',
         ].join('\n'), {
-            fontSize: '11px', fontFamily: 'monospace', color: '#2a3a2a',
-            lineSpacing: 7,
+            fontSize: '11px', fontFamily: 'monospace', color: '#587858',
+            lineSpacing: 5,
         });
         flickerGroup.push(controls);
 
-        // Mid rule
-        const rule2 = this.add.graphics().lineStyle(1, 0x182018, 1);
-        rule2.lineBetween(178, 330, W - 178, 330);
+        const rule2 = this.add.graphics().lineStyle(1, 0x253825, 1);
+        rule2.lineBetween(178, 358, W - 178, 358);
         flickerGroup.push(rule2);
 
-        // Tips
-        const tips = this.add.text(cx, 344, [
-            'Find the KEYCARD first  ·  then reach the stairwell exit',
-            'Boss guard every 5th floor  ·  3 hits  ·  approach with caution',
-            'Stealth bonus +1000  ·  time bonus up to +3000  ·  combos multiply',
+        const tipsHead = this.add.text(cx, 366, '— FIELD NOTES —', {
+            fontSize: '10px', fontFamily: 'monospace', color: '#5a7a5a',
+        }).setOrigin(0.5);
+        flickerGroup.push(tipsHead);
+
+        const tips = this.add.text(cx, 380, [
+            'Find the KEYCARD first  ·  then reach the stairwell exit on each floor',
+            'Standard guards take 2 hits  ·  elite 3  ·  boss 3  ·  backstab = silent 1-hit KO',
+            'Guards who find a KO\'d body raise the alarm  ·  drag bodies to hide them',
+            'Cameras sweep corridors  ·  SWITCH panel blinds them  ·  tripwires from floor 7',
+            'KO\'ing guards back-to-back builds a combo multiplier  ·  perk upgrade every 3rd floor',
         ].join('\n'), {
-            fontSize: '10px', fontFamily: 'monospace', color: '#253025',
+            fontSize: '10px', fontFamily: 'monospace', color: '#4e6a4e',
             align: 'center', lineSpacing: 5,
         }).setOrigin(0.5, 0);
         flickerGroup.push(tips);
 
-        // Bottom rule
-        const rule3 = this.add.graphics().lineStyle(1, 0x141c14, 1);
-        rule3.lineBetween(178, 403, W - 178, 403);
+        const rule3 = this.add.graphics().lineStyle(1, 0x1e2e1e, 1);
+        rule3.lineBetween(178, 454, W - 178, 454);
         flickerGroup.push(rule3);
 
-        // Exit legend
-        const exitSq = this.add.rectangle(cx - 42, 418, 11, 11, 0x00aa44).setOrigin(0.5);
-        const exitLbl = this.add.text(cx - 33, 418, '= stairwell exit  ·  color shifts each tier', {
-            fontSize: '10px', fontFamily: 'monospace', color: '#1e3020',
-        }).setOrigin(0, 0.5);
-        flickerGroup.push(exitSq, exitLbl);
-
-        // Score records
+        // Score records + run history
         const hs = parseInt(localStorage.getItem('echoThiefHigh') || '0');
         const ff = parseInt(localStorage.getItem('echoThiefFurthest') || '0');
         if (hs > 0 || ff > 0) {
             const recLines = [];
             if (hs > 0) recLines.push(`BEST SCORE  ${hs}`);
             if (ff > 0) recLines.push(`DEEPEST FLOOR  ${ff}  /  20`);
-            const rec = this.add.text(cx, 434, recLines.join('     '), {
-                fontSize: '10px', fontFamily: 'monospace', color: '#1c2a1c',
+            const rec = this.add.text(cx, 461, recLines.join('     '), {
+                fontSize: '10px', fontFamily: 'monospace', color: '#4e6e4e',
             }).setOrigin(0.5);
             flickerGroup.push(rec);
         }
+        const history = JSON.parse(localStorage.getItem('echoThiefHistory') || '[]');
+        if (history.length > 0) {
+            const histLines = history.map((r, i) => {
+                const prefix = i === 0 ? 'LAST' : `  -${i} `;
+                return `${prefix}  FL ${r.floor}/20  ${String(r.score).padStart(6)}  ${r.stealth}`;
+            });
+            const histTxt = this.add.text(cx, 473, histLines.join('\n'), {
+                fontSize: '9px', fontFamily: 'monospace', color: '#4a624a',
+                align: 'center', lineSpacing: 4,
+            }).setOrigin(0.5);
+            flickerGroup.push(histTxt);
+        }
 
         // === PRESS ANY KEY ===
-        const prompt = this.add.text(cx, 476, 'PRESS  ANY  KEY  TO  BEGIN  YOUR  ESCAPE', {
+        const prompt = this.add.text(cx, 524, 'PRESS  ANY  KEY  TO  BEGIN  YOUR  ESCAPE', {
             fontSize: '13px', fontFamily: 'monospace', color: '#bbbbbb',
         }).setOrigin(0.5);
         this.tweens.add({ targets: prompt, alpha: 0.08, duration: 750, yoyo: true, repeat: -1 });
 
-        // === FLUORESCENT FLICKER (room light failing) ===
+        // === FLUORESCENT FLICKER ===
         const roomFlicker = () => {
             const count = Phaser.Math.Between(1, 4);
             let chain = Promise.resolve();
@@ -325,7 +328,6 @@ export default class StartScene extends Phaser.Scene {
         };
         this.time.delayedCall(700, roomFlicker);
 
-        // Title has its own slow dramatic flicker (the paint is faded)
         const titleFlicker = () => {
             this.tweens.add({
                 targets: title,
